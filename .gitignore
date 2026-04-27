@@ -20,5 +20,11 @@ build/
 .DS_Store
 Thumbs.db
 
+# Credentials (bot app_id + app_secret)
+.credentials.json
+
+# Token cache
+.tokens.json
+
 # Test
 test_record.py

@@ -65,7 +65,7 @@
 - 输入/输出规范（I/O Specification）
 - 角色协作关系（Collaboration Matrix）
 
-详细定义见 [docs/roles.md](docs/roles.md)
+详细定义见各 Agent 源文件中的中文 system prompt
 
 ### 3.2 业务系统构建
 
@@ -124,56 +124,71 @@
 
 | 组件 | 技术选型 | 说明 |
 |------|---------|------|
-| **大语言模型** | 国内模型 (API) | 用于 Agent 推理与生成 |
+| **大语言模型** | 火山引擎 ARK | 用于 Agent 推理与生成 |
 | **业务中枢** | 飞书多维表格 | 数据存储、状态管理、流程驱动 |
-| **Agent 框架** | LangChain / 自研 | Agent 编排与工具调用 |
+| **Agent 框架** | 自研 | Agent 编排与工具调用 |
 | **编程语言** | Python | 主开发语言 |
 | **API 调用** | 飞书开放平台 SDK | 多维表格 OpenAPI |
 
-详见 [docs/architecture.md](docs/architecture.md)
+详见项目根目录 CLAUDE.md 与各模块源码
 
 ## 五、项目结构
 
 ```
 lark-multibitale-multiagent/
 ├── README.md                 # 项目说明文档
-├── LICENSE                   # 开源协议
+├── CLAUDE.md                 # AI 协作协议
 ├── requirements.txt          # Python 依赖
-├── config.yaml               # 配置文件
+├── config.yaml.example       # 配置文件模板（含 bot/LLM/workflow 完整结构）
+├── demo.yaml                 # 演示场景数据（编辑此文件切换演示内容）
 ├── src/
 │   ├── __init__.py
-│   ├── main.py               # 系统入口
-│   ├── agents/               # Agent 角色定义
+│   ├── main.py               # 系统入口（Auth + LLM + 多 Bot 初始化）
+│   ├── auth/
 │   │   ├── __init__.py
-│   │   ├── base_agent.py     # Agent 基类
-│   │   ├── manager.py        # 运营主管 Agent
-│   │   ├── editor.py         # 内容编辑 Agent
-│   │   └── reviewer.py       # 质量审核 Agent
-│   ├── base/                 # 飞书多维表格交互
+│   │   └── app_auth.py      # Bot 凭据管理 + Device Code Flow 注册 + Token 缓存
+│   ├── llm/
 │   │   ├── __init__.py
-│   │   ├── client.py         # API 客户端
-│   │   └── operations.py     # 增删改查操作
-│   ├── workflow/             # 业务流程引擎
+│   │   └── client.py        # 火山引擎 ARK LLM 客户端（OpenAI 兼容）
+│   ├── agents/              # Agent 角色定义（各自身份独立）
 │   │   ├── __init__.py
-│   │   └── engine.py         # 流程调度
-│   └── report/               # 报告生成模块
+│   │   ├── manager.py       # 运营主管 Agent — 任务分配、审批、报告
+│   │   ├── editor.py        # 内容编辑 Agent — LLM 生成文章
+│   │   └── reviewer.py      # 质量审核 Agent — LLM 审核决策
+│   ├── base_client/         # 飞书多维表格交互
+│   │   ├── __init__.py
+│   │   └── client.py        # SDK 封装 + 权限错误自动检测与修复指引
+│   └── workflow/            # 业务流程引擎
 │       ├── __init__.py
-│       └── generator.py      # 数据分析报告
-├── tests/                    # 测试用例
-│   ├── test_agents.py
-│   ├── test_base_api.py
-│   └── test_workflow.py
-├── docs/                     # 技术文档
-│   ├── architecture.md       # 系统架构设计
-│   ├── roles.md              # 角色定义详情
-│   ├── api_reference.md      # API 参考手册
-│   └── user_guide.md         # 用户使用指南
-└── scripts/                  # 辅助脚本
-    ├── setup_base.py         # 多维表格初始化
-    └── run_demo.py           # 演示脚本
+│       └── engine.py        # 选题→生产→审核→发布→归档→报告 全链路调度
 ```
 
-## 六、快速开始
+## 六、技术架构详解
+
+### 认证流程
+
+```
+Bot Credentials → app_access_token → lark-oapi SDK → Base API
+```
+
+- `src/auth/app_auth.py` 管理 bot 凭据（app_id + app_secret）
+- Device Code Flow 用于注册新 bot 应用，运行时通过 bot 凭据获取 app_access_token
+- Token 自动缓存与刷新
+
+### LLM 集成
+
+- `src/llm/client.py` 封装火山引擎 ARK（OpenAI 兼容）
+- 驱动 Editor（生成文章）、Reviewer（审核质量）、Manager（生成报告）
+
+### Agent 职责
+
+| Agent | LLM 驱动能力 |
+|-------|------------|
+| **Manager** | 生成运营报告、任务分配决策 |
+| **Editor** | 生成真实文章内容 |
+| **Reviewer** | 审核内容质量、风险把控 |
+
+## 七、快速开始
 
 ### 前置条件
 
@@ -191,22 +206,27 @@ cd lark-multibitale-multiagent
 # 安装依赖
 pip install -r requirements.txt
 
-# 配置环境变量
+# 配置
 cp config.yaml.example config.yaml
-# 编辑 config.yaml 填入你的 API 密钥
+# 编辑 config.yaml 填入 ARK API key + endpoint_id
 ```
 
 ### 运行系统
 
 ```bash
-# 初始化多维表格
-python scripts/setup_base.py
+# 首次：注册 3 个 bot 应用（每次会打开浏览器，点"通过"即可）
+python src/main.py --register manager
+python src/main.py --register editor
+python src/main.py --register reviewer
 
-# 启动系统
+# 演示：编辑 demo.yaml 定制演示场景，然后直接运行
 python src/main.py
+
+# 或者 CLI 快速覆盖
+python src/main.py --topic "突发新闻" --content-title "深度分析" --category "时政"
 ```
 
-## 七、参赛约束声明
+## 八、参赛约束声明
 
 本项目严格遵守竞赛规则：
 
@@ -217,21 +237,20 @@ python src/main.py
 | **数据真实性** | 所有操作基于真实 API，未使用 Mock |
 | **可复现性** | 评测端可通过行为回放验证系统行为 |
 
-详见 [docs/compliance.md](docs/compliance.md)
+详见项目源码与配置
 
-## 八、交付物清单
+## 九、交付物清单
 
 | 交付物 | 路径 | 状态 |
 |-------|------|------|
 | 源代码 | `src/` | ✅ |
-| 测试报告 | `tests/` | ✅ |
-| 技术文档 | `docs/` | ✅ |
+| 测试报告 | `tests/` | 🔄 待开发 |
+| 技术文档 | `docs/` | 🔄 待开发 |
 | 演示材料 | `demo/` | 🔄 进行中 |
-| 可运行包 | `scripts/run_demo.py` | ✅ |
 
-## 九、License
+## 十、License
 
-本项目基于 [MIT License](LICENSE) 开源。
+本项目基于 MIT License 开源。
 
 ---
 

@@ -1,1 +1,1 @@
-# src/base_client/__init__.py
+from src.base_client.client import BaseClient

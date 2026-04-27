@@ -1,0 +1,13 @@
+# Demo scenario data — edit this file to change the demo run.
+# Each section maps to the full-chain workflow parameters.
+# Run: python src/main.py  (reads from this file by default)
+# Run: python src/main.py --topic "..." --content-title "..." (CLI args override)
+
+topic:
+  title: "【AI 前沿】本周技术热点追踪"
+
+content:
+  title: "大模型应用趋势与落地实践"
+  summary: "盘点本周大模型领域的最新进展，涵盖推理能力突破、多模态融合、Agent 协作架构三大方向，结合真实落地案例分析技术演进的商业价值。"
+  category: "科技"
+  word_count: 2000
