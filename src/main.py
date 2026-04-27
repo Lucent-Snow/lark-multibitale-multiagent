@@ -1,41 +1,77 @@
 """
-入口文件
-运行方式：
-  python src/main.py
+Entry point.
+Usage:
+  python src/main.py              # run full chain
+  python src/main.py --register   # register a new bot
 """
 
-import sys
+import argparse
 import os
+import sys
 
-# 确保 src 在路径中
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.base_client.cli_wrapper import BaseAPI
+import yaml
+
+from src.auth.app_auth import register_and_save, Credentials, get_token
+from src.base_client.client import BaseClient
+from src.llm.client import LLMClient
 from src.workflow.engine import WorkflowEngine
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Feishu Multi-Agent Content Publishing System")
+    parser.add_argument("--register", metavar="BOT_NAME", help="Register a new bot (opens browser)")
+    args = parser.parse_args()
+
     print("=" * 50)
     print("Feishu Multi-Agent Content Publishing System")
     print("=" * 50)
 
-    # 读取配置
-    import yaml
+    # Load config
     config_path = os.path.join(os.path.dirname(__file__), "..", "config.yaml")
     with open(config_path, "r", encoding="utf-8") as f:
-        config = yaml.safe_load(f)
+        cfg = yaml.safe_load(f)
 
-    base_token = config["lark"]["base_token"]
+    # ── Bot Registration ───────────────────────────────────
+    if args.register:
+        bot_name = args.register
+        print(f"\n[Register] Creating bot '{bot_name}'...")
+        register_and_save(bot_name)
+        print(f"[Register] Bot '{bot_name}' saved to .credentials.json")
+        return
 
-    # 初始化 API 层（内部调用 lark-cli，复用已登录 token）
-    print("\nInitializing Base API layer...")
-    api = BaseAPI(base_token=base_token)
-    print("[OK] Base API initialized")
+    # ── Auth ───────────────────────────────────────────────
+    base_token = cfg["lark"]["base_token"]
+    bots_cfg = cfg["lark"]["bots"]
 
-    # 初始化工作流引擎
-    engine = WorkflowEngine(api)
+    # Default bot is manager
+    manager_bot = bots_cfg.get("manager", {})
+    manager_name = "manager"
 
-    # 跑一次完整链路
+    creds = Credentials()
+    if not creds.get(manager_name):
+        raise Exception(f"Bot '{manager_name}' not found. Run: python src/main.py --register manager")
+
+    print(f"\n[Auth] Initializing bot '{manager_name}'...")
+    get_token(manager_name)  # Validate credentials
+    print("[Auth] OK")
+
+    # ── Base API ───────────────────────────────────────────
+    print("[Base] Initializing SDK client...")
+    api = BaseClient(bot_name=manager_name, base_token=base_token)
+    print("[Base] OK")
+
+    # ── LLM ───────────────────────────────────────────────
+    print("[LLM] Initializing ARK client...")
+    llm = LLMClient(
+        api_key=cfg["llm"]["api_key"],
+        endpoint_id=cfg["llm"]["endpoint_id"],
+    )
+    print("[LLM] OK")
+
+    # ── Workflow ───────────────────────────────────────────
+    engine = WorkflowEngine(api, llm)
     print("\nExecuting full content publishing chain...\n")
 
     result = engine.run_full_chain(
@@ -49,7 +85,12 @@ def main():
     print("\n" + "=" * 50)
     print("Result:")
     for k, v in result.items():
-        print(f"  {k}: {v}")
+        if k == "report":
+            print(f"  {k}:")
+            for line in v.split("\n"):
+                print(f"    {line}")
+        else:
+            print(f"  {k}: {v}")
     print("=" * 50)
 
 
