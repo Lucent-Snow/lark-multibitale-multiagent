@@ -5,8 +5,42 @@ Each bot has its own app_id + app_secret.
 Token is automatically managed via src.auth.app_auth.get_token().
 """
 
+import re
+import webbrowser
+
 from lark_oapi.api.bitable.v1 import *
 from lark_oapi import Client
+
+
+def _handle_api_error(op_name: str, response):
+    """Unpack Feishu API error, detect permission issues, offer browser auth."""
+    code = getattr(response, "code", -1)
+    msg = getattr(response, "msg", str(response))
+
+    # Permission / scope error — extract the auth URL
+    auth_url = None
+    url_match = re.search(
+        r"https://open\.feishu\.cn/app/[a-z0-9_]+/auth\?[^\s]+", msg
+    )
+    if url_match:
+        auth_url = url_match.group()
+        print(f"\n  [AUTH] Missing permissions for this bot.")
+        print(f"  [AUTH] Opening browser for authorization...")
+        print(f"  [AUTH] URL: {auth_url}")
+        try:
+            webbrowser.open(auth_url)
+        except Exception:
+            pass
+
+    # Forbidden on a specific resource (table / base access)
+    if code == 17910003 or "Forbidden" in str(msg):
+        hint = (
+            f"\n  [HINT] The bot can authenticate but cannot access this Base.\n"
+            f"  [HINT] Open the Base in Feishu → Share → add this bot's app_id as Editor."
+        )
+        raise Exception(f"{op_name} failed: {msg}{hint}")
+
+    raise Exception(f"{op_name} failed: {msg}")
 
 
 class BaseClient:
@@ -51,7 +85,7 @@ class BaseClient:
             .build()
         response = self._client.bitable.v1.app_table_record.create(request, self._opt())
         if not response.success():
-            raise Exception(f"create_task failed: {response.msg}")
+            _handle_api_error("create_task", response)
         return response.data.record.record_id
 
     def list_tasks(self) -> list:
@@ -62,7 +96,7 @@ class BaseClient:
             .build()
         response = self._client.bitable.v1.app_table_record.list(request, self._opt())
         if not response.success():
-            raise Exception(f"list_tasks failed: {response.msg}")
+            _handle_api_error("list_tasks", response)
         return response.data.items or []
 
     def update_task_status(self, record_id: str, new_status: str) -> bool:
@@ -74,7 +108,7 @@ class BaseClient:
             .build()
         response = self._client.bitable.v1.app_table_record.update(request, self._opt())
         if not response.success():
-            raise Exception(f"update_task_status failed: {response.msg}")
+            _handle_api_error("update_task_status", response)
         return True
 
     def get_task(self, record_id: str) -> dict:
@@ -85,7 +119,7 @@ class BaseClient:
             .build()
         response = self._client.bitable.v1.app_table_record.get(request, self._opt())
         if not response.success():
-            raise Exception(f"get_task failed: {response.msg}")
+            _handle_api_error("get_task", response)
         return response.data.record
 
     # ─── content table ──────────────────────────────────────
@@ -98,7 +132,7 @@ class BaseClient:
             .build()
         response = self._client.bitable.v1.app_table_record.create(request, self._opt())
         if not response.success():
-            raise Exception(f"create_content failed: {response.msg}")
+            _handle_api_error("create_content", response)
         return response.data.record.record_id
 
     def list_contents(self) -> list:
@@ -109,7 +143,7 @@ class BaseClient:
             .build()
         response = self._client.bitable.v1.app_table_record.list(request, self._opt())
         if not response.success():
-            raise Exception(f"list_contents failed: {response.msg}")
+            _handle_api_error("list_contents", response)
         return response.data.items or []
 
     def get_content(self, record_id: str) -> dict:
@@ -120,7 +154,7 @@ class BaseClient:
             .build()
         response = self._client.bitable.v1.app_table_record.get(request, self._opt())
         if not response.success():
-            raise Exception(f"get_content failed: {response.msg}")
+            _handle_api_error("get_content", response)
         return response.data.record
 
     def update_content_status(self, record_id: str, new_status: str) -> bool:
@@ -132,7 +166,7 @@ class BaseClient:
             .build()
         response = self._client.bitable.v1.app_table_record.update(request, self._opt())
         if not response.success():
-            raise Exception(f"update_content_status failed: {response.msg}")
+            _handle_api_error("update_content_status", response)
         return True
 
     # ─── review table ───────────────────────────────────────
@@ -145,7 +179,7 @@ class BaseClient:
             .build()
         response = self._client.bitable.v1.app_table_record.create(request, self._opt())
         if not response.success():
-            raise Exception(f"create_review_task failed: {response.msg}")
+            _handle_api_error("create_review_task", response)
         return response.data.record.record_id
 
     def list_pending_reviews(self) -> list:
@@ -156,7 +190,7 @@ class BaseClient:
             .build()
         response = self._client.bitable.v1.app_table_record.list(request, self._opt())
         if not response.success():
-            raise Exception(f"list_pending_reviews failed: {response.msg}")
+            _handle_api_error("list_pending_reviews", response)
         return response.data.items or []
 
     def update_review_status(self, record_id: str, status: str,
@@ -172,7 +206,7 @@ class BaseClient:
             .build()
         response = self._client.bitable.v1.app_table_record.update(request, self._opt())
         if not response.success():
-            raise Exception(f"update_review_status failed: {response.msg}")
+            _handle_api_error("update_review_status", response)
         return True
 
     # ─── log table ─────────────────────────────────────────
@@ -192,5 +226,5 @@ class BaseClient:
             .build()
         response = self._client.bitable.v1.app_table_record.create(request, self._opt())
         if not response.success():
-            raise Exception(f"log_operation failed: {response.msg}")
+            _handle_api_error("log_operation", response)
         return response.data.record.record_id

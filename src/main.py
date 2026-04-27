@@ -1,27 +1,79 @@
 """
 Entry point.
 Usage:
-  python src/main.py              # run full chain
-  python src/main.py --register   # register a new bot
+  python src/main.py                                    # read demo.yaml, run full chain
+  python src/main.py --topic "标题" --summary "摘要"    # CLI args override file
+  python src/main.py --poll                             # polling driver
+  python src/main.py --register <BOT_NAME>              # register a bot
 """
+
+import warnings
+warnings.filterwarnings("ignore", message="pkg_resources is deprecated")
 
 import argparse
 import os
 import sys
 
+# Fix garbled output on Windows terminals
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except Exception:
+    pass
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import yaml
 
-from src.auth.app_auth import register_and_save, Credentials, get_token
+from src.auth.app_auth import register_and_save, Credentials
 from src.base_client.client import BaseClient
 from src.llm.client import LLMClient
 from src.workflow.engine import WorkflowEngine
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CONFIG_PATH = os.path.join(ROOT, "config.yaml")
+DEMO_PATH = os.path.join(ROOT, "demo.yaml")
+
+FALLBACK = {
+    "topic_title":   "【AI 前沿】本周技术热点追踪",
+    "content_title": "大模型应用趋势与落地实践",
+    "summary":       "盘点本周大模型领域的最新进展，涵盖推理能力、多模态融合、Agent 架构等方向。",
+    "category":      "科技",
+    "word_count":    2000,
+}
+
+
+def _load_demo() -> dict:
+    """Load demo scenario from demo.yaml. Returns dict with keys matching run_full_chain params."""
+    if os.path.exists(DEMO_PATH):
+        with open(DEMO_PATH, "r", encoding="utf-8") as f:
+            demo = yaml.safe_load(f) or {}
+        topic = demo.get("topic", {}) or {}
+        content = demo.get("content", {}) or {}
+        return {
+            "topic_title":   topic.get("title", FALLBACK["topic_title"]),
+            "content_title": content.get("title", FALLBACK["content_title"]),
+            "summary":       content.get("summary", FALLBACK["summary"]),
+            "category":      content.get("category", FALLBACK["category"]),
+            "word_count":    content.get("word_count", FALLBACK["word_count"]),
+        }
+    return dict(FALLBACK)
 
 
 def main():
     parser = argparse.ArgumentParser(description="Feishu Multi-Agent Content Publishing System")
     parser.add_argument("--register", metavar="BOT_NAME", help="Register a new bot (opens browser)")
+
+    # Full chain mode — all optional, fall back to demo.yaml then FALLBACK
+    parser.add_argument("--topic", default=None, help="Topic / task title")
+    parser.add_argument("--content-title", default=None, help="Article title for Editor")
+    parser.add_argument("--summary", default=None, help="Article summary / abstract")
+    parser.add_argument("--category", default=None, help="Content category")
+    parser.add_argument("--word-count", type=int, default=None, help="Target word count")
+
+    # Polling mode
+    parser.add_argument("--poll", action="store_true",
+                        help="Run polling driver instead of full chain")
+
     args = parser.parse_args()
 
     print("=" * 50)
@@ -29,8 +81,7 @@ def main():
     print("=" * 50)
 
     # Load config
-    config_path = os.path.join(os.path.dirname(__file__), "..", "config.yaml")
-    with open(config_path, "r", encoding="utf-8") as f:
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
 
     # ── Bot Registration ───────────────────────────────────
@@ -43,24 +94,20 @@ def main():
 
     # ── Auth ───────────────────────────────────────────────
     base_token = cfg["lark"]["base_token"]
-    bots_cfg = cfg["lark"]["bots"]
-
-    # Default bot is manager
-    manager_bot = bots_cfg.get("manager", {})
-    manager_name = "manager"
 
     creds = Credentials()
-    if not creds.get(manager_name):
-        raise Exception(f"Bot '{manager_name}' not found. Run: python src/main.py --register manager")
+    for bot_name in ("manager", "editor", "reviewer"):
+        if not creds.get(bot_name):
+            raise Exception(
+                f"Bot '{bot_name}' not found. Run: python src/main.py --register {bot_name}"
+            )
 
-    print(f"\n[Auth] Initializing bot '{manager_name}'...")
-    get_token(manager_name)  # Validate credentials
-    print("[Auth] OK")
-
-    # ── Base API ───────────────────────────────────────────
-    print("[Base] Initializing SDK client...")
-    api = BaseClient(bot_name=manager_name, base_token=base_token)
-    print("[Base] OK")
+    # ── Base API (one client per bot identity) ─────────────
+    print("[Base] Initializing bot clients...")
+    manager_api = BaseClient(bot_name="manager", base_token=base_token)
+    editor_api = BaseClient(bot_name="editor", base_token=base_token)
+    reviewer_api = BaseClient(bot_name="reviewer", base_token=base_token)
+    print("[Base] manager / editor / reviewer OK")
 
     # ── LLM ───────────────────────────────────────────────
     print("[LLM] Initializing ARK client...")
@@ -70,28 +117,45 @@ def main():
     )
     print("[LLM] OK")
 
+    # ── Merge args with demo file ──────────────────────────
+    demo = _load_demo()
+    topic_title   = args.topic         or demo["topic_title"]
+    content_title = args.content_title or demo["content_title"]
+    summary       = args.summary       or demo["summary"]
+    category      = args.category      or demo["category"]
+    word_count    = args.word_count    or demo["word_count"]
+
     # ── Workflow ───────────────────────────────────────────
-    engine = WorkflowEngine(api, llm)
-    print("\nExecuting full content publishing chain...\n")
+    engine = WorkflowEngine(manager_api, editor_api, reviewer_api, llm)
 
-    result = engine.run_full_chain(
-        topic_title="【首发】Claude 4.7 发布实测",
-        content_title="Claude 4.7 发布：上下文窗口扩展至 20M",
-        summary="实测 Claude 4.7 在代码补全、多文件重构、测试生成三大场景的表现...",
-        category="科技",
-        word_count=3200,
-    )
+    if args.poll:
+        print("\nStarting polling mode (Ctrl+C to stop)...\n")
+        engine.run_until_blocked()
+    else:
+        print(f"\nTopic: {topic_title}")
+        print(f"Content: {content_title}")
+        print(f"Category: {category} | Words: {word_count}")
+        print(f"Source: demo.yaml (override with --topic / --content-title / ...)")
+        print("\nExecuting full content publishing chain...\n")
 
-    print("\n" + "=" * 50)
-    print("Result:")
-    for k, v in result.items():
-        if k == "report":
-            print(f"  {k}:")
-            for line in v.split("\n"):
-                print(f"    {line}")
-        else:
-            print(f"  {k}: {v}")
-    print("=" * 50)
+        result = engine.run_full_chain(
+            topic_title=topic_title,
+            content_title=content_title,
+            summary=summary,
+            category=category,
+            word_count=word_count,
+        )
+
+        print("\n" + "=" * 50)
+        print("Result:")
+        for k, v in result.items():
+            if k == "report":
+                print(f"  {k}:")
+                for line in v.split("\n"):
+                    print(f"    {line}")
+            else:
+                print(f"  {k}: {v}")
+        print("=" * 50)
 
 
 if __name__ == "__main__":

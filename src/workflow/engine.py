@@ -13,12 +13,11 @@ from src.agents.reviewer import ReviewerAgent
 class WorkflowEngine:
     """Content publishing workflow engine."""
 
-    def __init__(self, base_client: BaseClient, llm: LLMClient):
-        self.api = base_client
-        self.llm = llm
-        self.manager = ManagerAgent(base_client, llm)
-        self.editor = EditorAgent(base_client, llm)
-        self.reviewer = ReviewerAgent(base_client, llm)
+    def __init__(self, manager_api: BaseClient, editor_api: BaseClient,
+                 reviewer_api: BaseClient, llm: LLMClient):
+        self.manager = ManagerAgent(manager_api, llm)
+        self.editor = EditorAgent(editor_api, llm)
+        self.reviewer = ReviewerAgent(reviewer_api, llm)
 
     def run_full_chain(self, topic_title: str, content_title: str,
                        summary: str, category: str, word_count: int) -> dict:
@@ -56,7 +55,7 @@ class WorkflowEngine:
 
         # 5. Reviewer: review the content we just produced
         print("[Reviewer] Reviewing content...")
-        content_record = self.api.get_content(content_id)
+        content_record = self.editor.api.get_content(content_id)
         content_fields = content_record.fields or {}
         article = content_fields.get("正文全文") or ""
         print(f"  [Reviewer] Article length: {len(article)} chars")

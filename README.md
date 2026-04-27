@@ -137,29 +137,30 @@
 ```
 lark-multibitale-multiagent/
 ├── README.md                 # 项目说明文档
-├── CLAUDE.md                 # AI 协作协议（本文档）
+├── CLAUDE.md                 # AI 协作协议
 ├── requirements.txt          # Python 依赖
-├── config.yaml.example       # 配置文件模板
+├── config.yaml.example       # 配置文件模板（含 bot/LLM/workflow 完整结构）
+├── demo.yaml                 # 演示场景数据（编辑此文件切换演示内容）
 ├── src/
 │   ├── __init__.py
-│   ├── main.py               # 系统入口（Auth + LLM 集成）
+│   ├── main.py               # 系统入口（Auth + LLM + 多 Bot 初始化）
 │   ├── auth/
 │   │   ├── __init__.py
-│   │   └── app_auth.py      # Bot 凭据管理 + Device Code Flow 注册 + Token
+│   │   └── app_auth.py      # Bot 凭据管理 + Device Code Flow 注册 + Token 缓存
 │   ├── llm/
 │   │   ├── __init__.py
-│   │   └── client.py        # ARK LLM 客户端（OpenAI 兼容）
-│   ├── agents/              # Agent 角色定义
+│   │   └── client.py        # 火山引擎 ARK LLM 客户端（OpenAI 兼容）
+│   ├── agents/              # Agent 角色定义（各自身份独立）
 │   │   ├── __init__.py
-│   │   ├── manager.py       # 运营主管 Agent
-│   │   ├── editor.py        # 内容编辑 Agent
-│   │   └── reviewer.py      # 质量审核 Agent
+│   │   ├── manager.py       # 运营主管 Agent — 任务分配、审批、报告
+│   │   ├── editor.py        # 内容编辑 Agent — LLM 生成文章
+│   │   └── reviewer.py      # 质量审核 Agent — LLM 审核决策
 │   ├── base_client/         # 飞书多维表格交互
 │   │   ├── __init__.py
-│   │   └── client.py        # SDK + app_access_token 封装
+│   │   └── client.py        # SDK 封装 + 权限错误自动检测与修复指引
 │   └── workflow/            # 业务流程引擎
 │       ├── __init__.py
-│       └── engine.py        # 流程调度
+│       └── engine.py        # 选题→生产→审核→发布→归档→报告 全链路调度
 ```
 
 ## 六、技术架构详解
@@ -205,19 +206,24 @@ cd lark-multibitale-multiagent
 # 安装依赖
 pip install -r requirements.txt
 
-# 配置环境变量
+# 配置
 cp config.yaml.example config.yaml
-# 编辑 config.yaml 填入你的 API 密钥
+# 编辑 config.yaml 填入 ARK API key + endpoint_id
 ```
 
 ### 运行系统
 
 ```bash
-# 注册 bot 应用（首次运行）
+# 首次：注册 3 个 bot 应用（每次会打开浏览器，点"通过"即可）
 python src/main.py --register manager
+python src/main.py --register editor
+python src/main.py --register reviewer
 
-# 启动系统，执行完整内容发布链路
+# 演示：编辑 demo.yaml 定制演示场景，然后直接运行
 python src/main.py
+
+# 或者 CLI 快速覆盖
+python src/main.py --topic "突发新闻" --content-title "深度分析" --category "时政"
 ```
 
 ## 八、参赛约束声明
