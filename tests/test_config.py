@@ -14,12 +14,30 @@ class ConfigTests(unittest.TestCase):
             "contents": "tbl_contents",
             "reviews": "tbl_reviews",
             "logs": "tbl_logs",
+            "objectives": "tbl_objectives",
+            "members": "tbl_members",
+            "messages": "tbl_messages",
+            "artifacts": "tbl_artifacts",
+            "verifications": "tbl_verifications",
         })
 
         self.assertEqual(table_ids.tasks, "tbl_tasks")
         self.assertEqual(table_ids.contents, "tbl_contents")
         self.assertEqual(table_ids.reviews, "tbl_reviews")
         self.assertEqual(table_ids.logs, "tbl_logs")
+        self.assertEqual(table_ids.objectives, "tbl_objectives")
+        self.assertEqual(table_ids.messages, "tbl_messages")
+
+    def test_agent_team_tables_are_optional_but_validated_when_used(self):
+        table_ids = BaseTableIds.from_config({
+            "tasks": "tbl_tasks",
+            "contents": "tbl_contents",
+            "reviews": "tbl_reviews",
+            "logs": "tbl_logs",
+        })
+
+        with self.assertRaisesRegex(ValueError, "agent-team mode"):
+            table_ids.require_agent_team()
 
     def test_table_ids_require_all_tables(self):
         with self.assertRaisesRegex(ValueError, "Missing lark.tables config"):

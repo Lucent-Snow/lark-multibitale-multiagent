@@ -156,6 +156,7 @@ lark-multibitale-multiagent/
 │   │   ├── manager.py       # 运营主管 Agent — 任务分配、审批、报告
 │   │   ├── editor.py        # 内容编辑 Agent — LLM 生成文章
 │   │   └── reviewer.py      # 质量审核 Agent — LLM 审核决策
+│   ├── agent_team/          # Agent-team lite：目标拆解、任务市场、Base 存储边界
 │   ├── base_client/         # 飞书多维表格交互
 │   │   ├── __init__.py
 │   │   └── client.py        # SDK 封装 + 权限错误自动检测与修复指引

@@ -14,6 +14,13 @@ lark:
     reviews: "tbl_reviews_here"
     logs: "tbl_logs_here"
 
+    # Optional: required only for agent-team mode.
+    objectives: "tbl_objectives_here"
+    members: "tbl_members_here"
+    messages: "tbl_messages_here"
+    artifacts: "tbl_artifacts_here"
+    verifications: "tbl_verifications_here"
+
 llm:
   # Volcengine ARK API key and endpoint ID.
   api_key: "ark_api_key_here"
