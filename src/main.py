@@ -5,6 +5,7 @@ Usage:
   python src/main.py --topic "标题" --summary "摘要"    # CLI args override file
   python src/main.py --poll                             # polling driver
   python src/main.py --agent-team-demo                  # offline agent-team demo
+  python src/main.py --agent-team-base-demo             # real Base agent-team demo
   python src/main.py --register <BOT_NAME>              # register a bot
 """
 
@@ -26,7 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import yaml
 
 from src.auth.app_auth import register_and_save, Credentials
-from src.agent_team.demo import run_agent_team_demo
+from src.agent_team.demo import run_agent_team_base_demo, run_agent_team_demo
 from src.base_client.client import BaseClient, BaseTableIds
 from src.llm.client import LLMClient
 from src.workflow.engine import WorkflowEngine
@@ -68,7 +69,7 @@ def _load_table_ids(cfg: dict) -> BaseTableIds:
 
 
 def _print_agent_team_demo(result: dict) -> None:
-    """Print an offline agent-team demo result."""
+    """Print an agent-team demo result."""
     print("\nAgent-Team Demo Result")
     print("-" * 50)
     print(f"Objective: {result['objective']}")
@@ -99,6 +100,34 @@ def _print_agent_team_demo(result: dict) -> None:
         )
 
 
+def _print_agent_team_base_demo(result: dict) -> None:
+    """Print a real Base agent-team validation result."""
+    print("\nAgent-Team Base Demo Result")
+    print("-" * 50)
+    print(f"Objective: {result['objective']}")
+    print(f"Objective record: {result['objective_id']}")
+    print(f"All tasks completed: {result['all_tasks_completed']}")
+    print("\nPlanned tasks:")
+    for task in result["planned_tasks"]:
+        print(
+            f"  - {task.task_id} | {task.role} | {task.status} | "
+            f"{task.owner or '-'} | {task.subject}"
+        )
+    print("\nCompleted tasks:")
+    for task in result["completed_tasks"]:
+        print(
+            f"  - {task.task_id} | {task.role} | {task.status} | "
+            f"{task.owner} | {task.subject}"
+        )
+    print("\nVerification records:")
+    for record_id in result["verification_ids"]:
+        print(f"  - {record_id}")
+    print("\nReadback:")
+    print(f"  Objective status: {result['readback']['objective'].get('状态')}")
+    print(f"  Task records read: {len(result['readback']['tasks'])}")
+    print(f"  Verification records read: {len(result['readback']['verifications'])}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Feishu Multi-Agent Content Publishing System")
     parser.add_argument("--register", metavar="BOT_NAME", help="Register a new bot (opens browser)")
@@ -115,6 +144,8 @@ def main():
                         help="Run polling driver instead of full chain")
     parser.add_argument("--agent-team-demo", action="store_true",
                         help="Run offline agent-team task-market demo")
+    parser.add_argument("--agent-team-base-demo", action="store_true",
+                        help="Run real LLM + Feishu Base agent-team demo")
     parser.add_argument("--objective", default=None,
                         help="Agent-team objective title")
     parser.add_argument("--objective-description", default=None,
@@ -179,6 +210,24 @@ def main():
         endpoint_id=cfg["llm"]["endpoint_id"],
     )
     print("[LLM] OK")
+
+    if args.agent_team_base_demo:
+        title = args.objective or "真实飞书 Base Agent-Team 验证"
+        description = args.objective_description or (
+            "验证 Leader 使用真实 LLM 拆解开放目标，多个角色围绕飞书 Base "
+            "任务市场完成领取、产物写回、消息通知、验证记录和操作日志。"
+        )
+        result = run_agent_team_base_demo(
+            manager_api=manager_api,
+            editor_api=editor_api,
+            reviewer_api=reviewer_api,
+            llm=llm,
+            title=title,
+            description=description,
+            max_tasks=args.agent_team_max_tasks,
+        )
+        _print_agent_team_base_demo(result)
+        return
 
     # ── Merge args with demo file ──────────────────────────
     demo = _load_demo()

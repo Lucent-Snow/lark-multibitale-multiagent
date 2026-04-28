@@ -150,15 +150,28 @@ class BaseClient:
 
     def list_records(self, table_id: str) -> list:
         """List records from any configured Base table."""
-        request = ListAppTableRecordRequest.builder() \
-            .app_token(self.base_token) \
-            .table_id(table_id) \
-            .page_size(100) \
-            .build()
-        response = self._client.bitable.v1.app_table_record.list(request, self._opt())
-        if not response.success():
-            _handle_api_error("list_records", response)
-        return response.data.items or []
+        items = []
+        page_token = None
+        while True:
+            builder = ListAppTableRecordRequest.builder() \
+                .app_token(self.base_token) \
+                .table_id(table_id) \
+                .page_size(100)
+            if page_token:
+                builder = builder.page_token(page_token)
+            request = builder.build()
+            response = self._client.bitable.v1.app_table_record.list(
+                request, self._opt()
+            )
+            if not response.success():
+                _handle_api_error("list_records", response)
+            data = response.data
+            items.extend(data.items or [])
+            if not getattr(data, "has_more", False):
+                return items
+            page_token = getattr(data, "page_token", None)
+            if not page_token:
+                return items
 
     def update_record(self, table_id: str, record_id: str, fields: dict) -> bool:
         """Update a record in any configured Base table."""

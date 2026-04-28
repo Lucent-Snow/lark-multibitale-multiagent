@@ -70,9 +70,9 @@ in_progress -> failed
 - `AgentTeamStore`：定义持久化边界。
 - `BaseAgentTeamStore`：把协议映射到飞书 Base。
 
-## 离线演示
+## 演示与验证
 
-第二阶段先提供离线演示入口，不依赖飞书或 ARK：
+离线演示入口不依赖飞书或 ARK：
 
 ```bash
 python src/main.py --agent-team-demo
@@ -85,7 +85,14 @@ python src/main.py --agent-team-demo --objective "新品发布内容运营" --ob
 目标 -> Leader 拆任务 -> Worker 按角色领取 -> 写产物 -> 发消息给 team-lead -> 写日志
 ```
 
-真实飞书端到端演示需要先创建 agent-team 表，并在 `config.yaml` 中补齐：
+真实飞书端到端演示入口会调用 ARK LLM，并向飞书 Base 写入目标、成员、任务、产物、消息、验证记录和操作日志：
+
+```bash
+python src/main.py --agent-team-base-demo --agent-team-max-tasks 4
+python src/main.py --agent-team-base-demo --objective "真实业务目标" --objective-description "用一段话描述要完成的目标"
+```
+
+真实演示需要先创建 agent-team 表，并在 `config.yaml` 中补齐：
 
 ```yaml
 lark:
@@ -97,4 +104,9 @@ lark:
     verifications: "tbl_verifications_here"
 ```
 
-下一阶段接真实 `BaseAgentTeamStore` CLI 模式和飞书表端到端验证。
+每次真实演示会把本轮目标记录 ID 写入任务的 `元数据.objective_id`，任务市场只领取本轮任务，避免重复运行时误处理旧任务。验证通过的最小标准是：
+
+- 目标池记录最终状态为 `completed`。
+- 本轮计划任务全部变为 `completed`。
+- 每个完成任务都有对应产物、消息、操作日志和验证记录。
+- 程序末尾读回目标、任务和验证记录，确认 Base 中的数据已经落盘。
