@@ -11,12 +11,15 @@ class FakeCredentials:
 
 
 class FakeResponse:
-    def __init__(self, record_id="rec1", items=None):
+    def __init__(self, record_id="rec1", items=None, has_more=False,
+                 page_token=None):
         self.code = 0
         self.msg = "ok"
         self.data = SimpleNamespace(
             record=SimpleNamespace(record_id=record_id, fields={}),
             items=items or [],
+            has_more=has_more,
+            page_token=page_token,
         )
 
     def success(self):
@@ -26,6 +29,7 @@ class FakeResponse:
 class FakeRecordApi:
     def __init__(self):
         self.calls = []
+        self.list_responses = []
 
     def _capture(self, method, request, option):
         self.calls.append({
@@ -33,6 +37,7 @@ class FakeRecordApi:
             "app_token": request.app_token,
             "table_id": request.table_id,
             "record_id": getattr(request, "record_id", None),
+            "page_token": getattr(request, "page_token", None),
             "option": option,
         })
         return FakeResponse()
@@ -41,7 +46,10 @@ class FakeRecordApi:
         return self._capture("create", request, option)
 
     def list(self, request, option):
-        return self._capture("list", request, option)
+        self._capture("list", request, option)
+        if self.list_responses:
+            return self.list_responses.pop(0)
+        return FakeResponse()
 
     def update(self, request, option):
         return self._capture("update", request, option)
@@ -169,6 +177,26 @@ class BaseClientTests(unittest.TestCase):
             ],
         )
         self.assertTrue(all(call["app_token"] == "base_token_value" for call in record_api.calls))
+
+    def test_list_records_fetches_all_pages(self):
+        record_api = FakeRecordApi()
+        record_api.list_responses = [
+            FakeResponse(
+                items=[SimpleNamespace(record_id="rec1")],
+                has_more=True,
+                page_token="next_page",
+            ),
+            FakeResponse(items=[SimpleNamespace(record_id="rec2")]),
+        ]
+        client = self._client(record_api)
+
+        records = client.list_records("tbl_tasks")
+
+        self.assertEqual([record.record_id for record in records], ["rec1", "rec2"])
+        self.assertEqual([call["page_token"] for call in record_api.calls], [
+            None,
+            "next_page",
+        ])
 
 
 if __name__ == "__main__":

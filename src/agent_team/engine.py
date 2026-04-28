@@ -106,6 +106,21 @@ Max tasks: {max_tasks}
                 metadata=metadata,
             ))
 
+        known_subjects = {spec.subject for spec in specs}
+        specs = [
+            TaskSpec(
+                subject=spec.subject,
+                description=spec.description,
+                role=spec.role,
+                blocked_by=[
+                    dep for dep in spec.blocked_by
+                    if dep in known_subjects and dep != spec.subject
+                ],
+                metadata=spec.metadata,
+            )
+            for spec in specs
+        ]
+
         return specs or self._fallback_plan(title, description, max_tasks)
 
     def _fallback_plan(self, title: str, description: str,
