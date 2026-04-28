@@ -16,6 +16,7 @@
 - `src/llm/`: ARK LLM 客户端
 - `src/agents/`: Manager、Editor、Reviewer 三个业务 Agent
 - `src/workflow/`: 选题、生产、审核、发布、归档、报告的流程编排
+- `src/agent_team/`: agent-team lite 的任务市场、Leader 拆解和 Base 存储边界
 - `tests/`: 不依赖真实飞书/ARK 的自动化测试
 - `docs/`: 架构、流程和关键设计说明
 

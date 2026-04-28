@@ -24,6 +24,11 @@ class BaseTableIds:
     contents: str
     reviews: str
     logs: str
+    objectives: str | None = None
+    members: str | None = None
+    messages: str | None = None
+    artifacts: str | None = None
+    verifications: str | None = None
 
     @classmethod
     def from_config(cls, config: dict) -> "BaseTableIds":
@@ -43,7 +48,28 @@ class BaseTableIds:
             contents=config["contents"],
             reviews=config["reviews"],
             logs=config["logs"],
+            objectives=config.get("objectives"),
+            members=config.get("members"),
+            messages=config.get("messages"),
+            artifacts=config.get("artifacts"),
+            verifications=config.get("verifications"),
         )
+
+    def require_agent_team(self) -> None:
+        """Validate optional agent-team table IDs before using that feature."""
+        required = {
+            "objectives": self.objectives,
+            "members": self.members,
+            "messages": self.messages,
+            "artifacts": self.artifacts,
+            "verifications": self.verifications,
+        }
+        missing = [name for name, value in required.items() if not value]
+        if missing:
+            raise ValueError(
+                "Missing lark.tables config for agent-team mode: "
+                + ", ".join(missing)
+            )
 
 
 def _handle_api_error(op_name: str, response):
@@ -108,141 +134,101 @@ class BaseClient:
         """Update the cached token (called after refresh)."""
         pass  # Not needed for bot token, SDK handles it internally
 
+    # ─── generic table helpers ─────────────────────────────
+
+    def create_record(self, table_id: str, fields: dict) -> str:
+        """Create a record in any configured Base table."""
+        request = CreateAppTableRecordRequest.builder() \
+            .app_token(self.base_token) \
+            .table_id(table_id) \
+            .request_body(AppTableRecord.builder().fields(fields).build()) \
+            .build()
+        response = self._client.bitable.v1.app_table_record.create(request, self._opt())
+        if not response.success():
+            _handle_api_error("create_record", response)
+        return response.data.record.record_id
+
+    def list_records(self, table_id: str) -> list:
+        """List records from any configured Base table."""
+        request = ListAppTableRecordRequest.builder() \
+            .app_token(self.base_token) \
+            .table_id(table_id) \
+            .page_size(100) \
+            .build()
+        response = self._client.bitable.v1.app_table_record.list(request, self._opt())
+        if not response.success():
+            _handle_api_error("list_records", response)
+        return response.data.items or []
+
+    def update_record(self, table_id: str, record_id: str, fields: dict) -> bool:
+        """Update a record in any configured Base table."""
+        request = UpdateAppTableRecordRequest.builder() \
+            .app_token(self.base_token) \
+            .table_id(table_id) \
+            .record_id(record_id) \
+            .request_body(AppTableRecord.builder().fields(fields).build()) \
+            .build()
+        response = self._client.bitable.v1.app_table_record.update(request, self._opt())
+        if not response.success():
+            _handle_api_error("update_record", response)
+        return True
+
+    def get_record(self, table_id: str, record_id: str):
+        """Get a record from any configured Base table."""
+        request = GetAppTableRecordRequest.builder() \
+            .app_token(self.base_token) \
+            .table_id(table_id) \
+            .record_id(record_id) \
+            .build()
+        response = self._client.bitable.v1.app_table_record.get(request, self._opt())
+        if not response.success():
+            _handle_api_error("get_record", response)
+        return response.data.record
+
     # ─── task table ─────────────────────────────────────────
 
     def create_task(self, fields: dict) -> str:
         if "状态" not in fields:
             fields["状态"] = "待处理"
-        request = CreateAppTableRecordRequest.builder() \
-            .app_token(self.base_token) \
-            .table_id(self.table_ids.tasks) \
-            .request_body(AppTableRecord.builder().fields(fields).build()) \
-            .build()
-        response = self._client.bitable.v1.app_table_record.create(request, self._opt())
-        if not response.success():
-            _handle_api_error("create_task", response)
-        return response.data.record.record_id
+        return self.create_record(self.table_ids.tasks, fields)
 
     def list_tasks(self) -> list:
-        request = ListAppTableRecordRequest.builder() \
-            .app_token(self.base_token) \
-            .table_id(self.table_ids.tasks) \
-            .page_size(100) \
-            .build()
-        response = self._client.bitable.v1.app_table_record.list(request, self._opt())
-        if not response.success():
-            _handle_api_error("list_tasks", response)
-        return response.data.items or []
+        return self.list_records(self.table_ids.tasks)
 
     def update_task_status(self, record_id: str, new_status: str) -> bool:
-        request = UpdateAppTableRecordRequest.builder() \
-            .app_token(self.base_token) \
-            .table_id(self.table_ids.tasks) \
-            .record_id(record_id) \
-            .request_body(AppTableRecord.builder().fields({"状态": new_status}).build()) \
-            .build()
-        response = self._client.bitable.v1.app_table_record.update(request, self._opt())
-        if not response.success():
-            _handle_api_error("update_task_status", response)
-        return True
+        return self.update_record(self.table_ids.tasks, record_id, {"状态": new_status})
 
     def get_task(self, record_id: str) -> dict:
-        request = GetAppTableRecordRequest.builder() \
-            .app_token(self.base_token) \
-            .table_id(self.table_ids.tasks) \
-            .record_id(record_id) \
-            .build()
-        response = self._client.bitable.v1.app_table_record.get(request, self._opt())
-        if not response.success():
-            _handle_api_error("get_task", response)
-        return response.data.record
+        return self.get_record(self.table_ids.tasks, record_id)
 
     # ─── content table ──────────────────────────────────────
 
     def create_content(self, fields: dict) -> str:
-        request = CreateAppTableRecordRequest.builder() \
-            .app_token(self.base_token) \
-            .table_id(self.table_ids.contents) \
-            .request_body(AppTableRecord.builder().fields(fields).build()) \
-            .build()
-        response = self._client.bitable.v1.app_table_record.create(request, self._opt())
-        if not response.success():
-            _handle_api_error("create_content", response)
-        return response.data.record.record_id
+        return self.create_record(self.table_ids.contents, fields)
 
     def list_contents(self) -> list:
-        request = ListAppTableRecordRequest.builder() \
-            .app_token(self.base_token) \
-            .table_id(self.table_ids.contents) \
-            .page_size(100) \
-            .build()
-        response = self._client.bitable.v1.app_table_record.list(request, self._opt())
-        if not response.success():
-            _handle_api_error("list_contents", response)
-        return response.data.items or []
+        return self.list_records(self.table_ids.contents)
 
     def get_content(self, record_id: str) -> dict:
-        request = GetAppTableRecordRequest.builder() \
-            .app_token(self.base_token) \
-            .table_id(self.table_ids.contents) \
-            .record_id(record_id) \
-            .build()
-        response = self._client.bitable.v1.app_table_record.get(request, self._opt())
-        if not response.success():
-            _handle_api_error("get_content", response)
-        return response.data.record
+        return self.get_record(self.table_ids.contents, record_id)
 
     def update_content_status(self, record_id: str, new_status: str) -> bool:
-        request = UpdateAppTableRecordRequest.builder() \
-            .app_token(self.base_token) \
-            .table_id(self.table_ids.contents) \
-            .record_id(record_id) \
-            .request_body(AppTableRecord.builder().fields({"状态": new_status}).build()) \
-            .build()
-        response = self._client.bitable.v1.app_table_record.update(request, self._opt())
-        if not response.success():
-            _handle_api_error("update_content_status", response)
-        return True
+        return self.update_record(self.table_ids.contents, record_id, {"状态": new_status})
 
     # ─── review table ───────────────────────────────────────
 
     def create_review_task(self, fields: dict) -> str:
-        request = CreateAppTableRecordRequest.builder() \
-            .app_token(self.base_token) \
-            .table_id(self.table_ids.reviews) \
-            .request_body(AppTableRecord.builder().fields(fields).build()) \
-            .build()
-        response = self._client.bitable.v1.app_table_record.create(request, self._opt())
-        if not response.success():
-            _handle_api_error("create_review_task", response)
-        return response.data.record.record_id
+        return self.create_record(self.table_ids.reviews, fields)
 
     def list_pending_reviews(self) -> list:
-        request = ListAppTableRecordRequest.builder() \
-            .app_token(self.base_token) \
-            .table_id(self.table_ids.reviews) \
-            .page_size(100) \
-            .build()
-        response = self._client.bitable.v1.app_table_record.list(request, self._opt())
-        if not response.success():
-            _handle_api_error("list_pending_reviews", response)
-        return response.data.items or []
+        return self.list_records(self.table_ids.reviews)
 
     def update_review_status(self, record_id: str, status: str,
                              opinion: str = "") -> bool:
         fields = {"审核状态": status}
         if opinion:
             fields["审核意见"] = opinion
-        request = UpdateAppTableRecordRequest.builder() \
-            .app_token(self.base_token) \
-            .table_id(self.table_ids.reviews) \
-            .record_id(record_id) \
-            .request_body(AppTableRecord.builder().fields(fields).build()) \
-            .build()
-        response = self._client.bitable.v1.app_table_record.update(request, self._opt())
-        if not response.success():
-            _handle_api_error("update_review_status", response)
-        return True
+        return self.update_record(self.table_ids.reviews, record_id, fields)
 
     # ─── log table ─────────────────────────────────────────
 
@@ -254,12 +240,4 @@ class BaseClient:
             "关联记录ID": record_id,
             "变更内容": detail,
         }
-        request = CreateAppTableRecordRequest.builder() \
-            .app_token(self.base_token) \
-            .table_id(self.table_ids.logs) \
-            .request_body(AppTableRecord.builder().fields(fields).build()) \
-            .build()
-        response = self._client.bitable.v1.app_table_record.create(request, self._opt())
-        if not response.success():
-            _handle_api_error("log_operation", response)
-        return response.data.record.record_id
+        return self.create_record(self.table_ids.logs, fields)
