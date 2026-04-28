@@ -27,6 +27,7 @@ pip install -r requirements.txt
 python -m unittest discover -s tests
 python -m compileall -q src tests
 python src/main.py --help
+python src/main.py --agent-team-demo
 ```
 
 ## 配置和敏感文件
@@ -50,4 +51,5 @@ python src/main.py --help
 - 普通改动至少运行 `python -m unittest discover -s tests`。
 - 语法和导入检查运行 `python -m compileall -q src tests`。
 - CLI 参数检查运行 `python src/main.py --help`。
+- Agent-team 离线演示运行 `python src/main.py --agent-team-demo`。
 - 端到端演示才运行 `python src/main.py`，它会真实调用 ARK 和飞书 Base，并写入记录。

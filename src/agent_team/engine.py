@@ -2,6 +2,7 @@
 
 import json
 import re
+from typing import TYPE_CHECKING
 
 from src.agent_team.contracts import (
     AgentTeamStore,
@@ -11,7 +12,9 @@ from src.agent_team.contracts import (
     TASK_PENDING,
     TaskSpec,
 )
-from src.llm.client import LLMClient
+
+if TYPE_CHECKING:
+    from src.llm.client import LLMClient
 
 
 LEADER_SYSTEM_PROMPT = """\
@@ -30,7 +33,7 @@ Rules:
 class AgentTeamLeader:
     """Leader agent that turns open objectives into task specifications."""
 
-    def __init__(self, llm: LLMClient | None = None):
+    def __init__(self, llm: "LLMClient | None" = None):
         self.llm = llm
 
     def plan_objective(self, title: str, description: str,

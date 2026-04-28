@@ -4,6 +4,7 @@ Usage:
   python src/main.py                                    # read demo.yaml, run full chain
   python src/main.py --topic "标题" --summary "摘要"    # CLI args override file
   python src/main.py --poll                             # polling driver
+  python src/main.py --agent-team-demo                  # offline agent-team demo
   python src/main.py --register <BOT_NAME>              # register a bot
 """
 
@@ -25,6 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import yaml
 
 from src.auth.app_auth import register_and_save, Credentials
+from src.agent_team.demo import run_agent_team_demo
 from src.base_client.client import BaseClient, BaseTableIds
 from src.llm.client import LLMClient
 from src.workflow.engine import WorkflowEngine
@@ -65,6 +67,38 @@ def _load_table_ids(cfg: dict) -> BaseTableIds:
     return BaseTableIds.from_config(lark_cfg.get("tables") or {})
 
 
+def _print_agent_team_demo(result: dict) -> None:
+    """Print an offline agent-team demo result."""
+    print("\nAgent-Team Demo Result")
+    print("-" * 50)
+    print(f"Objective: {result['objective']}")
+    print(f"All tasks completed: {result['all_tasks_completed']}")
+    print("\nTasks:")
+    for task in result["tasks"]:
+        print(
+            f"  - {task.task_id} | {task.role} | {task.status} | "
+            f"{task.owner or '-'} | {task.subject}"
+        )
+    print("\nArtifacts:")
+    for artifact_id, artifact in result["artifacts"].items():
+        print(
+            f"  - {artifact_id} | {artifact['author']} | "
+            f"{artifact['title']}"
+        )
+    print("\nMessages:")
+    for message_id, message in result["messages"].items():
+        print(
+            f"  - {message_id} | {message['sender']} -> "
+            f"{message['recipient']} | {message['summary']}"
+        )
+    print("\nLogs:")
+    for log in result["logs"]:
+        print(
+            f"  - {log['log_id']} | {log['operator']} | "
+            f"{log['op_type']} | {log['target_id']}"
+        )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Feishu Multi-Agent Content Publishing System")
     parser.add_argument("--register", metavar="BOT_NAME", help="Register a new bot (opens browser)")
@@ -79,12 +113,34 @@ def main():
     # Polling mode
     parser.add_argument("--poll", action="store_true",
                         help="Run polling driver instead of full chain")
+    parser.add_argument("--agent-team-demo", action="store_true",
+                        help="Run offline agent-team task-market demo")
+    parser.add_argument("--objective", default=None,
+                        help="Agent-team objective title")
+    parser.add_argument("--objective-description", default=None,
+                        help="Agent-team objective description")
+    parser.add_argument("--agent-team-max-tasks", type=int, default=4,
+                        help="Maximum tasks for agent-team demo")
 
     args = parser.parse_args()
 
     print("=" * 50)
     print("Feishu Multi-Agent Content Publishing System")
     print("=" * 50)
+
+    if args.agent_team_demo:
+        title = args.objective or "AI 内容运营团队演示"
+        description = args.objective_description or (
+            "围绕一个开放目标，演示 Leader 拆任务、Worker 领取任务、"
+            "产物写回、消息通知和操作日志。"
+        )
+        result = run_agent_team_demo(
+            title=title,
+            description=description,
+            max_tasks=args.agent_team_max_tasks,
+        )
+        _print_agent_team_demo(result)
+        return
 
     # Load config
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:

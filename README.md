@@ -241,6 +241,9 @@ python src/main.py
 
 # 或者 CLI 快速覆盖
 python src/main.py --topic "突发新闻" --content-title "深度分析" --category "时政"
+
+# 离线 Agent-team 演示：不调用飞书或 ARK
+python src/main.py --agent-team-demo
 ```
 
 ### 自动化验证

@@ -1,14 +1,9 @@
 import unittest
-from dataclasses import replace
 
-from src.agent_team.contracts import (
-    AgentTeamTask,
-    TASK_COMPLETED,
-    TASK_IN_PROGRESS,
-    TASK_PENDING,
-    TaskSpec,
-)
+from src.agent_team.contracts import TASK_COMPLETED, TASK_IN_PROGRESS, TASK_PENDING, TaskSpec
+from src.agent_team.demo import run_agent_team_demo
 from src.agent_team.engine import AgentTeamEngine, AgentTeamLeader
+from src.agent_team.memory_store import InMemoryAgentTeamStore
 
 
 class FakeLLM:
@@ -17,78 +12,6 @@ class FakeLLM:
 
     def chat_with_system(self, *args, **kwargs):
         return self.response
-
-
-class FakeAgentTeamStore:
-    def __init__(self):
-        self.tasks = []
-        self.artifacts = {}
-        self.messages = {}
-        self.logs = []
-
-    def create_task(self, spec: TaskSpec) -> AgentTeamTask:
-        task = AgentTeamTask(
-            task_id=f"task-{len(self.tasks) + 1}",
-            subject=spec.subject,
-            description=spec.description,
-            role=spec.role,
-            blocked_by=spec.blocked_by,
-            metadata=spec.metadata,
-        )
-        self.tasks.append(task)
-        return task
-
-    def list_tasks(self) -> list[AgentTeamTask]:
-        return list(self.tasks)
-
-    def update_task(self, task_id: str, fields: dict) -> AgentTeamTask:
-        for index, task in enumerate(self.tasks):
-            if task.task_id != task_id:
-                continue
-            updated = replace(
-                task,
-                status=fields.get("status", task.status),
-                owner=fields.get("owner", task.owner),
-                metadata=fields.get("metadata", task.metadata),
-            )
-            self.tasks[index] = updated
-            return updated
-        raise KeyError(task_id)
-
-    def create_artifact(self, task_id: str, title: str, content: str,
-                        author: str) -> str:
-        artifact_id = f"artifact-{len(self.artifacts) + 1}"
-        self.artifacts[artifact_id] = {
-            "task_id": task_id,
-            "title": title,
-            "content": content,
-            "author": author,
-        }
-        return artifact_id
-
-    def create_message(self, sender: str, recipient: str, summary: str,
-                       message: str, task_id: str = "") -> str:
-        message_id = f"message-{len(self.messages) + 1}"
-        self.messages[message_id] = {
-            "sender": sender,
-            "recipient": recipient,
-            "summary": summary,
-            "message": message,
-            "task_id": task_id,
-        }
-        return message_id
-
-    def log_operation(self, operator: str, op_type: str, target_id: str,
-                      detail: str) -> str:
-        log_id = f"log-{len(self.logs) + 1}"
-        self.logs.append({
-            "log_id": log_id,
-            "operator": operator,
-            "op_type": op_type,
-            "target_id": target_id,
-            "detail": detail,
-        })
-        return log_id
 
 
 class AgentTeamTests(unittest.TestCase):
@@ -121,7 +44,7 @@ class AgentTeamTests(unittest.TestCase):
         self.assertIn("目标", specs[0].description)
 
     def test_start_objective_creates_task_market(self):
-        store = FakeAgentTeamStore()
+        store = InMemoryAgentTeamStore()
         engine = AgentTeamEngine(store, AgentTeamLeader(None))
 
         result = engine.start_objective("目标", "说明", max_tasks=3)
@@ -132,7 +55,7 @@ class AgentTeamTests(unittest.TestCase):
         self.assertEqual(store.logs[0]["op_type"], "plan")
 
     def test_claim_next_task_respects_role_and_dependencies(self):
-        store = FakeAgentTeamStore()
+        store = InMemoryAgentTeamStore()
         store.create_task(TaskSpec(
             subject="Research",
             description="Research",
@@ -155,7 +78,7 @@ class AgentTeamTests(unittest.TestCase):
         self.assertEqual(researcher_task.owner, "researcher-1")
 
     def test_complete_task_writes_artifact_message_and_log(self):
-        store = FakeAgentTeamStore()
+        store = InMemoryAgentTeamStore()
         task = store.create_task(TaskSpec(
             subject="Research",
             description="Research",
@@ -175,6 +98,15 @@ class AgentTeamTests(unittest.TestCase):
         self.assertIn(result["message_id"], store.messages)
         self.assertEqual(store.messages[result["message_id"]]["recipient"], "team-lead")
         self.assertEqual(store.logs[-1]["op_type"], "complete")
+
+    def test_offline_demo_completes_planned_task_chain(self):
+        result = run_agent_team_demo("目标", "说明", max_tasks=4)
+
+        self.assertTrue(result["all_tasks_completed"])
+        self.assertEqual(len(result["tasks"]), 4)
+        self.assertEqual(len(result["artifacts"]), 4)
+        self.assertEqual(len(result["messages"]), 4)
+        self.assertTrue(all(task.status == TASK_COMPLETED for task in result["tasks"]))
 
 
 if __name__ == "__main__":
