@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import yaml
 
 from src.auth.app_auth import register_and_save, Credentials
-from src.base_client.client import BaseClient
+from src.base_client.client import BaseClient, BaseTableIds
 from src.llm.client import LLMClient
 from src.workflow.engine import WorkflowEngine
 
@@ -57,6 +57,12 @@ def _load_demo() -> dict:
             "word_count":    content.get("word_count", FALLBACK["word_count"]),
         }
     return dict(FALLBACK)
+
+
+def _load_table_ids(cfg: dict) -> BaseTableIds:
+    """Load Feishu Base table IDs from config."""
+    lark_cfg = cfg.get("lark", {}) or {}
+    return BaseTableIds.from_config(lark_cfg.get("tables") or {})
 
 
 def main():
@@ -94,6 +100,7 @@ def main():
 
     # ── Auth ───────────────────────────────────────────────
     base_token = cfg["lark"]["base_token"]
+    table_ids = _load_table_ids(cfg)
 
     creds = Credentials()
     for bot_name in ("manager", "editor", "reviewer"):
@@ -104,9 +111,9 @@ def main():
 
     # ── Base API (one client per bot identity) ─────────────
     print("[Base] Initializing bot clients...")
-    manager_api = BaseClient(bot_name="manager", base_token=base_token)
-    editor_api = BaseClient(bot_name="editor", base_token=base_token)
-    reviewer_api = BaseClient(bot_name="reviewer", base_token=base_token)
+    manager_api = BaseClient(bot_name="manager", base_token=base_token, table_ids=table_ids)
+    editor_api = BaseClient(bot_name="editor", base_token=base_token, table_ids=table_ids)
+    reviewer_api = BaseClient(bot_name="reviewer", base_token=base_token, table_ids=table_ids)
     print("[Base] manager / editor / reviewer OK")
 
     # ── LLM ───────────────────────────────────────────────

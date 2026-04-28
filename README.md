@@ -137,6 +137,7 @@
 ```
 lark-multibitale-multiagent/
 ├── README.md                 # 项目说明文档
+├── AGENTS.md                 # Agent 协作、模块边界与验证命令
 ├── CLAUDE.md                 # AI 协作协议
 ├── requirements.txt          # Python 依赖
 ├── config.yaml.example       # 配置文件模板（含 bot/LLM/workflow 完整结构）
@@ -208,7 +209,22 @@ pip install -r requirements.txt
 
 # 配置
 cp config.yaml.example config.yaml
-# 编辑 config.yaml 填入 ARK API key + endpoint_id
+# 编辑 config.yaml 填入 Base token、4 个表 ID、ARK API key + endpoint_id
+```
+
+`config.yaml` 必须包含：
+
+```yaml
+lark:
+  base_token: "app_or_base_token_here"
+  tables:
+    tasks: "tbl_tasks_here"
+    contents: "tbl_contents_here"
+    reviews: "tbl_reviews_here"
+    logs: "tbl_logs_here"
+llm:
+  api_key: "ark_api_key_here"
+  endpoint_id: "ep_endpoint_id_here"
 ```
 
 ### 运行系统
@@ -224,6 +240,14 @@ python src/main.py
 
 # 或者 CLI 快速覆盖
 python src/main.py --topic "突发新闻" --content-title "深度分析" --category "时政"
+```
+
+### 自动化验证
+
+```bash
+python -m unittest discover -s tests
+python -m compileall -q src tests
+python src/main.py --help
 ```
 
 ## 八、参赛约束声明
@@ -244,8 +268,8 @@ python src/main.py --topic "突发新闻" --content-title "深度分析" --categ
 | 交付物 | 路径 | 状态 |
 |-------|------|------|
 | 源代码 | `src/` | ✅ |
-| 测试报告 | `tests/` | 🔄 待开发 |
-| 技术文档 | `docs/` | 🔄 待开发 |
+| 测试报告 | `tests/` | ✅ 基础离线测试 |
+| 技术文档 | `docs/` | ✅ 架构流程图 |
 | 演示材料 | `demo/` | 🔄 进行中 |
 
 ## 十、License
