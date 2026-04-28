@@ -20,8 +20,9 @@ Bot Credentials → app_access_token → lark-oapi SDK → Base API
 | **LLM** | `src/llm/client.py` | 火山引擎 ARK 客户端（OpenAI 兼容） |
 | **Agents** | `src/agents/` | Manager、Editor、Reviewer 三角色 |
 | **Workflow** | `src/workflow/engine.py` | 流程调度与审核流程 |
-| **Base Client** | `src/base_client/client.py` | 飞书多维表格 SDK 封装（含权限错误检测） |
+| **Base Client** | `src/base_client/client.py` | 飞书多维表格 SDK 封装（含权限错误检测、表 ID 配置） |
 | **Demo** | `demo.yaml` | 演示场景数据，编辑此文件切换演示内容 |
+| **Tests** | `tests/` | 离线 fake client / fake LLM 自动化测试 |
 
 ### 数据流
 
@@ -41,7 +42,7 @@ Bot Credentials → app_access_token → lark-oapi SDK → Base API
 ## 开发约定
 
 - 主开发语言: Python
-- 配置: `config.yaml`（含敏感信息，不提交）
+- 配置: `config.yaml`（含敏感信息，不提交；需包含 `lark.tables` 与 `llm`）
 - 演示数据: `demo.yaml`（可提交，AI 可编辑切换演示场景）
 - 代码注释和 commit message: 英文
 - Agent prompt: 中文角色描述
@@ -61,3 +62,10 @@ python src/main.py
 python src/main.py --topic "突发新闻" --content-title "深度分析"
 ```
 
+## 验证
+
+```bash
+python -m unittest discover -s tests
+python -m compileall -q src tests
+python src/main.py --help
+```
