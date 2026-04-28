@@ -70,4 +70,31 @@ in_progress -> failed
 - `AgentTeamStore`：定义持久化边界。
 - `BaseAgentTeamStore`：把协议映射到飞书 Base。
 
-下一阶段再接 CLI 和真实端到端演示。
+## 离线演示
+
+第二阶段先提供离线演示入口，不依赖飞书或 ARK：
+
+```bash
+python src/main.py --agent-team-demo
+python src/main.py --agent-team-demo --objective "新品发布内容运营" --objective-description "规划一组内容生产、审核和复盘任务"
+```
+
+离线演示会使用内存存储完成：
+
+```text
+目标 -> Leader 拆任务 -> Worker 按角色领取 -> 写产物 -> 发消息给 team-lead -> 写日志
+```
+
+真实飞书端到端演示需要先创建 agent-team 表，并在 `config.yaml` 中补齐：
+
+```yaml
+lark:
+  tables:
+    objectives: "tbl_objectives_here"
+    members: "tbl_members_here"
+    messages: "tbl_messages_here"
+    artifacts: "tbl_artifacts_here"
+    verifications: "tbl_verifications_here"
+```
+
+下一阶段接真实 `BaseAgentTeamStore` CLI 模式和飞书表端到端验证。
