@@ -26,5 +26,13 @@ Thumbs.db
 # Token cache
 .tokens.json
 
+# Frontend
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.env*.local
+frontend/tsconfig.tsbuildinfo
+.playwright-cli/
+
 # Test
 test_record.py

@@ -1,0 +1,56 @@
+:root {
+  color-scheme: light;
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --panel-soft: #f9fafb;
+  --line: #dde3ea;
+  --line-strong: #c9d3df;
+  --text: #17202a;
+  --muted: #667485;
+  --muted-2: #8b98a8;
+  --accent: #1463ff;
+  --accent-soft: #e7efff;
+  --green: #16885a;
+  --green-soft: #e7f6ef;
+  --yellow: #a56a00;
+  --yellow-soft: #fff4d7;
+  --red: #be2e32;
+  --red-soft: #fde8ea;
+  --ink: #101820;
+  --shadow: 0 14px 34px rgba(16, 24, 32, 0.08);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background:
+    linear-gradient(180deg, rgba(20, 99, 255, 0.05), transparent 260px),
+    var(--bg);
+  color: var(--text);
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "Microsoft YaHei", sans-serif;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+code {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
