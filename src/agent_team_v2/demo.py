@@ -146,6 +146,9 @@ def run_agent_team_v2_base_demo(manager_api: BaseClient, llm: LLMClient,
                 process.kill()
                 process.wait(timeout=5)
 
+    recovered = engine.recover_expired_tasks(objective_id)
+    if recovered:
+        print(f"[Agent-Team v2] recovered expired tasks={recovered}", flush=True)
     if not objective_completed:
         objective_completed = engine.complete_objective_if_ready(objective_id)
     tasks = store.list_tasks(objective_id)
@@ -220,11 +223,38 @@ def _parse_verification_response(response: str) -> dict:
     verdict = str(payload.get("verdict") or "").strip().upper()
     if verdict not in {VERIFICATION_PASS, VERIFICATION_FAIL}:
         verdict = VERIFICATION_FAIL
+    issues = str(payload.get("issues") or "")
+    suggestions = str(payload.get("suggestions") or "")
+    if verdict == VERIFICATION_PASS and _contains_blocking_gap(issues, suggestions):
+        verdict = VERIFICATION_FAIL
     return {
         "verdict": verdict,
-        "issues": str(payload.get("issues") or ""),
-        "suggestions": str(payload.get("suggestions") or ""),
+        "issues": issues,
+        "suggestions": suggestions,
     }
+
+
+def _contains_blocking_gap(*values: str) -> bool:
+    text = "\n".join(values)
+    negative_markers = [
+        "无信息缺失",
+        "没有信息缺失",
+        "无证据缺失",
+        "没有证据缺失",
+        "no missing evidence",
+        "no information gap",
+    ]
+    lowered = text.lower()
+    if any(marker.lower() in lowered for marker in negative_markers):
+        return False
+    markers = [
+        "信息缺口",
+        "不具备",
+        "not enough evidence",
+        "insufficient evidence",
+        "missing evidence",
+    ]
+    return any(marker.lower() in lowered for marker in markers)
 
 
 def _progress_summary(store, objective_id: str) -> str:

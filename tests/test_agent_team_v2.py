@@ -255,6 +255,54 @@ class AgentTeamV2Tests(unittest.TestCase):
         statuses = {claim.worker_id: claim.status for claim in store.list_claims(objective_id, task.task_id)}
         self.assertEqual(statuses["researcher-0"], CLAIM_EXPIRED)
 
+    def test_engine_recovers_expired_tasks_without_worker_claim(self):
+        store = InMemoryAgentTeamV2Store()
+        objective_id = store.create_objective("目标", "说明")
+        task = store.create_task(objective_id, TaskPlan(
+            subject="Review",
+            description="Review",
+            role="reviewer",
+        ))
+        old_claim = store.create_claim(objective_id, task.task_id, "reviewer-1", "old")
+        store.update_claim(objective_id, old_claim.claim_id, "won")
+        expired = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+        store.update_task(objective_id, task.task_id, {
+            "status": TASK_CLAIMED,
+            "owner": "reviewer-1",
+            "lease_until": expired,
+        })
+
+        recovered = AgentTeamV2Engine(store, LeaderV2(None)).recover_expired_tasks(objective_id)
+
+        task_after = store.get_task(objective_id, task.task_id)
+        claims = store.list_claims(objective_id, task.task_id)
+        self.assertEqual(recovered, 1)
+        self.assertEqual(task_after.status, TASK_PENDING)
+        self.assertEqual(task_after.owner, "")
+        self.assertEqual(claims[0].status, CLAIM_EXPIRED)
+
+    def test_engine_recovers_expired_in_progress_tasks(self):
+        store = InMemoryAgentTeamV2Store()
+        objective_id = store.create_objective("目标", "说明")
+        task = store.create_task(objective_id, TaskPlan(
+            subject="Review",
+            description="Review",
+            role="reviewer",
+        ))
+        expired = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+        store.update_task(objective_id, task.task_id, {
+            "status": "in_progress",
+            "owner": "reviewer-1",
+            "lease_until": expired,
+        })
+
+        recovered = AgentTeamV2Engine(store, LeaderV2(None)).recover_expired_tasks(objective_id)
+
+        task_after = store.get_task(objective_id, task.task_id)
+        self.assertEqual(recovered, 1)
+        self.assertEqual(task_after.status, TASK_PENDING)
+        self.assertEqual(task_after.owner, "")
+
     def test_worker_failure_returns_task_to_pending_for_retry(self):
         store = InMemoryAgentTeamV2Store()
         objective_id = store.create_objective("目标", "说明")
@@ -631,6 +679,20 @@ class AgentTeamV2Tests(unittest.TestCase):
         self.assertEqual(failed["verdict"], VERIFICATION_FAIL)
         self.assertEqual(mixed["verdict"], VERIFICATION_FAIL)
         self.assertIn("non-JSON", failed["issues"])
+
+    def test_parse_verification_response_fails_blocking_gaps(self):
+        result = _parse_verification_response(
+            '{"verdict": "PASS", "issues": "当前存在信息缺口，无法形成结论", "suggestions": "补充证据"}'
+        )
+
+        self.assertEqual(result["verdict"], VERIFICATION_FAIL)
+
+    def test_parse_verification_response_allows_negative_gap_statement(self):
+        result = _parse_verification_response(
+            '{"verdict": "PASS", "issues": "证据链完整，无信息缺失", "suggestions": "可发布"}'
+        )
+
+        self.assertEqual(result["verdict"], VERIFICATION_PASS)
 
 
 if __name__ == "__main__":
