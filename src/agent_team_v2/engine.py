@@ -251,6 +251,33 @@ class AgentTeamV2Engine:
         )
         return True
 
+    def recover_expired_tasks(self, objective_id: str, actor: str = "team-lead") -> int:
+        """Recover expired leased tasks without requiring a worker claim attempt."""
+        recovered_count = 0
+        now = datetime.now(timezone.utc)
+        for task in self.store.list_tasks(objective_id):
+            if task.status not in {TASK_CLAIMED, TASK_IN_PROGRESS}:
+                continue
+            if not _lease_expired(task.lease_until, now=now):
+                continue
+            self.store.update_task(objective_id, task.task_id, {
+                "status": TASK_PENDING,
+                "owner": "",
+                "lease_until": "",
+            })
+            for claim in self.store.list_claims(objective_id, task.task_id):
+                if claim.status in {CLAIM_ACTIVE, CLAIM_WON}:
+                    self.store.update_claim(objective_id, claim.claim_id, CLAIM_EXPIRED)
+            self.store.log_event(
+                objective_id,
+                actor,
+                "task_lease_expired",
+                task.task_id,
+                f"Recovered expired {task.status} task from owner {task.owner}",
+            )
+            recovered_count += 1
+        return recovered_count
+
 
 class WorkerV2:
     """One worker process participating through the shared v2 task board."""
@@ -618,7 +645,7 @@ def _scalar(value, default: str = "") -> str:
     return str(value)
 
 
-def _lease_expired(value: str) -> bool:
+def _lease_expired(value: str, now: datetime | None = None) -> bool:
     if not value:
         return False
     try:
@@ -627,4 +654,4 @@ def _lease_expired(value: str) -> bool:
         return True
     if expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=timezone.utc)
-    return expires_at < datetime.now(timezone.utc)
+    return expires_at < (now or datetime.now(timezone.utc))
