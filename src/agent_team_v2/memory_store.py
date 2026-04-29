@@ -1,7 +1,6 @@
 """In-memory v2 store for protocol tests and offline demos."""
 
 import copy
-import json
 import threading
 from datetime import datetime, timezone
 
@@ -280,14 +279,3 @@ class InMemoryAgentTeamV2Store:
         if task.objective_id != objective_id:
             raise ValueError(f"Task is outside objective scope: {task_id}")
         return task
-
-    def dump_json(self) -> str:
-        """Return a JSON snapshot useful for debugging tests."""
-        with self._lock:
-            return json.dumps({
-                "objectives": self.objectives,
-                "workers": self.workers,
-                "tasks": [task.__dict__ for task in self.tasks.values()],
-                "edges": [edge.__dict__ for edge in self.edges.values()],
-                "claims": [claim.__dict__ for claim in self.claims.values()],
-            }, ensure_ascii=False, indent=2)
