@@ -45,16 +45,21 @@ Rules:
 """
 
 
+class PlanningError(Exception):
+    """Raised when a real leader plan cannot be trusted."""
+
+
 class LeaderV2:
     """Leader that plans objectives into task graphs."""
 
-    def __init__(self, llm: "LLMClient | None" = None):
+    def __init__(self, llm: "LLMClient | None" = None, allow_fallback: bool = True):
         self.llm = llm
+        self.allow_fallback = allow_fallback
 
     def plan(self, title: str, description: str, max_tasks: int = 5) -> list[TaskPlan]:
         """Return a bounded, self-contained task plan."""
         if not self.llm:
-            return self._fallback_plan(title, description, max_tasks)
+            return self._fallback_or_raise("LLM client is not configured", title, description, max_tasks)
         prompt = f"""\
 Objective title: {title}
 Objective description:
@@ -84,13 +89,28 @@ Max tasks: {max_tasks}
         except json.JSONDecodeError:
             match = re.search(r"\[[\s\S]*\]", response)
             if not match:
-                return self._fallback_plan(title, description, max_tasks)
+                return self._fallback_or_raise(
+                    "Leader response did not contain a JSON array",
+                    title,
+                    description,
+                    max_tasks,
+                )
             try:
                 payload = json.loads(match.group())
             except json.JSONDecodeError:
-                return self._fallback_plan(title, description, max_tasks)
+                return self._fallback_or_raise(
+                    "Leader response contained invalid JSON",
+                    title,
+                    description,
+                    max_tasks,
+                )
         if not isinstance(payload, list):
-            return self._fallback_plan(title, description, max_tasks)
+            return self._fallback_or_raise(
+                "Leader response must be a JSON array",
+                title,
+                description,
+                max_tasks,
+            )
 
         plans = []
         for item in payload[:max_tasks]:
@@ -118,7 +138,12 @@ Max tasks: {max_tasks}
 
         known_subjects = {plan.subject for plan in plans}
         if len(known_subjects) != len(plans):
-            return self._fallback_plan(title, description, max_tasks)
+            return self._fallback_or_raise(
+                "Leader response contains duplicate task subjects",
+                title,
+                description,
+                max_tasks,
+            )
         normalized = [
             TaskPlan(
                 subject=plan.subject,
@@ -134,7 +159,20 @@ Max tasks: {max_tasks}
             )
             for plan in plans
         ]
-        return normalized or self._fallback_plan(title, description, max_tasks)
+        if not normalized:
+            return self._fallback_or_raise(
+                "Leader response did not contain valid tasks",
+                title,
+                description,
+                max_tasks,
+            )
+        return normalized
+
+    def _fallback_or_raise(self, reason: str, title: str, description: str,
+                           max_tasks: int) -> list[TaskPlan]:
+        if not self.allow_fallback:
+            raise PlanningError(reason)
+        return self._fallback_plan(title, description, max_tasks)
 
     def _fallback_plan(self, title: str, description: str,
                        max_tasks: int) -> list[TaskPlan]:
@@ -186,8 +224,8 @@ class AgentTeamV2Engine:
     def start_objective(self, title: str, description: str,
                         max_tasks: int = 5) -> dict:
         """Create an objective, tasks, and task-id dependency edges."""
-        objective_id = self.store.create_objective(title, description)
         plans = self.leader.plan(title, description, max_tasks=max_tasks)
+        objective_id = self.store.create_objective(title, description)
         tasks: list[V2Task] = []
         tasks_by_subject: dict[str, V2Task] = {}
         for plan in plans:

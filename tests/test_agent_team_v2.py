@@ -26,7 +26,7 @@ from src.agent_team_v2.demo import (
     run_agent_team_v2_base_demo,
     select_agent_team_v2_workers,
 )
-from src.agent_team_v2.engine import AgentTeamV2Engine, LeaderV2, WorkerV2
+from src.agent_team_v2.engine import AgentTeamV2Engine, LeaderV2, PlanningError, WorkerV2
 from src.agent_team_v2.memory_store import InMemoryAgentTeamV2Store
 
 
@@ -164,6 +164,12 @@ class AgentTeamV2Tests(unittest.TestCase):
             "Verify final quality",
         ])
 
+    def test_leader_can_fail_closed_without_fallback(self):
+        llm = FakeLLM("not json")
+
+        with self.assertRaises(PlanningError):
+            LeaderV2(llm, allow_fallback=False).plan("Launch", "Plan launch content")
+
     def test_fallback_plan_keeps_all_tasks_self_contained(self):
         plans = LeaderV2(None).plan("OBJ", "DESC", max_tasks=4)
 
@@ -183,6 +189,16 @@ class AgentTeamV2Tests(unittest.TestCase):
         tasks = {task.subject: task for task in result["tasks"]}
         self.assertEqual(edges[0].from_task_id, tasks["Research objective context"].task_id)
         self.assertEqual(edges[0].to_task_id, tasks["Draft primary deliverable"].task_id)
+
+    def test_start_objective_plans_before_persisting_objective(self):
+        store = InMemoryAgentTeamV2Store()
+        engine = AgentTeamV2Engine(store, LeaderV2(FakeLLM("not json"), allow_fallback=False))
+
+        with self.assertRaises(PlanningError):
+            engine.start_objective("目标", "说明", max_tasks=2)
+
+        self.assertEqual(store.objectives, {})
+        self.assertEqual(store.tasks, {})
 
     def test_worker_cannot_claim_blocked_task(self):
         store = InMemoryAgentTeamV2Store()
