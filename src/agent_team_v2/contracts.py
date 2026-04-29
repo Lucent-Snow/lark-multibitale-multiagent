@@ -7,14 +7,11 @@ from typing import Protocol
 TASK_PENDING = "pending"
 TASK_CLAIMED = "claimed"
 TASK_IN_PROGRESS = "in_progress"
-TASK_BLOCKED = "blocked"
 TASK_COMPLETED = "completed"
 TASK_FAILED = "failed"
-TASK_EXPIRED = "expired"
 
 WORKER_IDLE = "idle"
 WORKER_WORKING = "working"
-WORKER_STOPPED = "stopped"
 
 CLAIM_ACTIVE = "active"
 CLAIM_WON = "won"
@@ -23,8 +20,6 @@ CLAIM_EXPIRED = "expired"
 
 VERIFICATION_PASS = "PASS"
 VERIFICATION_FAIL = "FAIL"
-
-TERMINAL_TASK_STATUSES = {TASK_COMPLETED, TASK_FAILED}
 
 
 @dataclass(frozen=True)
