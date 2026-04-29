@@ -21,6 +21,17 @@ lark:
     artifacts: "tbl_artifacts_here"
     verifications: "tbl_verifications_here"
 
+    # Optional: required only for agent-team v2 mode.
+    v2_objectives: "tbl_v2_objectives_here"
+    v2_workers: "tbl_v2_workers_here"
+    v2_tasks: "tbl_v2_tasks_here"
+    v2_task_edges: "tbl_v2_task_edges_here"
+    v2_claims: "tbl_v2_claims_here"
+    v2_messages: "tbl_v2_messages_here"
+    v2_artifacts: "tbl_v2_artifacts_here"
+    v2_verifications: "tbl_v2_verifications_here"
+    v2_events: "tbl_v2_events_here"
+
 llm:
   # Volcengine ARK API key and endpoint ID.
   api_key: "ark_api_key_here"

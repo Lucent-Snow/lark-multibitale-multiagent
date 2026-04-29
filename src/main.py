@@ -6,6 +6,7 @@ Usage:
   python src/main.py --poll                             # polling driver
   python src/main.py --agent-team-demo                  # offline agent-team demo
   python src/main.py --agent-team-base-demo             # real Base agent-team demo
+  python src/main.py --agent-team-v2-demo               # real Base agent-team v2 demo
   python src/main.py --register <BOT_NAME>              # register a bot
 """
 
@@ -28,6 +29,14 @@ import yaml
 
 from src.auth.app_auth import register_and_save, Credentials
 from src.agent_team.demo import run_agent_team_base_demo, run_agent_team_demo
+from src.agent_team_v2.base_store import BaseAgentTeamV2Store
+from src.agent_team_v2.demo import (
+    create_agent_team_v2_tables,
+    make_llm_artifact_fn,
+    run_agent_team_v2_base_demo,
+    run_agent_team_v2_memory_demo,
+)
+from src.agent_team_v2.engine import WorkerV2
 from src.base_client.client import BaseClient, BaseTableIds
 from src.llm.client import LLMClient
 from src.workflow.engine import WorkflowEngine
@@ -128,6 +137,23 @@ def _print_agent_team_base_demo(result: dict) -> None:
     print(f"  Verification records read: {len(result['readback']['verifications'])}")
 
 
+def _print_agent_team_v2_demo(result: dict) -> None:
+    """Print agent-team v2 validation results."""
+    print("\nAgent-Team v2 Demo Result")
+    print("-" * 50)
+    print(f"Objective record: {result['objective_id']}")
+    print(f"All tasks completed: {result['all_tasks_completed']}")
+    print(f"Objective completed: {result.get('objective_completed', '-')}")
+    print("\nTasks:")
+    for task in result["tasks"]:
+        print(
+            f"  - {task.task_id} | {task.role} | {task.status} | "
+            f"{task.owner or '-'} | {task.subject}"
+        )
+    print(f"\nEdges: {len(result['edges'])}")
+    print(f"Verifications: {len(result.get('verifications', []))}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Feishu Multi-Agent Content Publishing System")
     parser.add_argument("--register", metavar="BOT_NAME", help="Register a new bot (opens browser)")
@@ -146,12 +172,32 @@ def main():
                         help="Run offline agent-team task-market demo")
     parser.add_argument("--agent-team-base-demo", action="store_true",
                         help="Run real LLM + Feishu Base agent-team demo")
+    parser.add_argument("--agent-team-v2-setup", action="store_true",
+                        help="Create real Feishu Base tables for agent-team v2")
+    parser.add_argument("--agent-team-v2-memory-demo", action="store_true",
+                        help="Run in-memory agent-team v2 protocol demo")
+    parser.add_argument("--agent-team-v2-demo", action="store_true",
+                        help="Run real Base agent-team v2 multi-process demo")
+    parser.add_argument("--agent-team-v2-worker", action="store_true",
+                        help="Run one agent-team v2 worker process")
     parser.add_argument("--objective", default=None,
                         help="Agent-team objective title")
     parser.add_argument("--objective-description", default=None,
                         help="Agent-team objective description")
+    parser.add_argument("--objective-id", default=None,
+                        help="Agent-team v2 objective record ID")
     parser.add_argument("--agent-team-max-tasks", type=int, default=4,
                         help="Maximum tasks for agent-team demo")
+    parser.add_argument("--workers", type=int, default=5,
+                        help="Number of worker processes for agent-team v2 demo")
+    parser.add_argument("--worker-id", default=None,
+                        help="Agent-team v2 worker ID")
+    parser.add_argument("--worker-role", default=None,
+                        help="Agent-team v2 worker role")
+    parser.add_argument("--worker-max-tasks", type=int, default=1,
+                        help="Maximum tasks for one agent-team v2 worker")
+    parser.add_argument("--worker-idle-rounds", type=int, default=60,
+                        help="Idle polling rounds before a v2 worker exits")
 
     args = parser.parse_args()
 
@@ -171,6 +217,19 @@ def main():
             max_tasks=args.agent_team_max_tasks,
         )
         _print_agent_team_demo(result)
+        return
+
+    if args.agent_team_v2_memory_demo:
+        title = args.objective or "Agent-Team v2 内存协议演示"
+        description = args.objective_description or (
+            "验证任务 ID 依赖图、worker 领取、产物、消息、验证和目标完成闸门。"
+        )
+        result = run_agent_team_v2_memory_demo(
+            title=title,
+            description=description,
+            max_tasks=args.agent_team_max_tasks,
+        )
+        _print_agent_team_v2_demo(result)
         return
 
     # Load config
@@ -203,6 +262,14 @@ def main():
     reviewer_api = BaseClient(bot_name="reviewer", base_token=base_token, table_ids=table_ids)
     print("[Base] manager / editor / reviewer OK")
 
+    if args.agent_team_v2_setup:
+        print("[Agent-Team v2] Creating Base tables...")
+        created = create_agent_team_v2_tables(manager_api)
+        print("\nAdd these table IDs to config.yaml under lark.tables:")
+        for key, table_id in created.items():
+            print(f"  {key}: \"{table_id}\"")
+        return
+
     # ── LLM ───────────────────────────────────────────────
     print("[LLM] Initializing ARK client...")
     llm = LLMClient(
@@ -227,6 +294,53 @@ def main():
             max_tasks=args.agent_team_max_tasks,
         )
         _print_agent_team_base_demo(result)
+        return
+
+    if args.agent_team_v2_worker:
+        if not args.objective_id or not args.worker_id or not args.worker_role:
+            raise ValueError(
+                "--agent-team-v2-worker requires --objective-id, --worker-id, and --worker-role"
+            )
+        store = BaseAgentTeamV2Store(manager_api)
+        worker = WorkerV2(
+            store=store,
+            objective_id=args.objective_id,
+            worker_id=args.worker_id,
+            role=args.worker_role,
+            artifact_fn=make_llm_artifact_fn(llm, args.worker_id, args.worker_role),
+        )
+        completed = 0
+        idle_rounds = 0
+        while completed < args.worker_max_tasks and idle_rounds < args.worker_idle_rounds:
+            result = worker.run_once()
+            if result["status"] == "completed":
+                completed += 1
+                idle_rounds = 0
+            else:
+                idle_rounds += 1
+                import time
+                time.sleep(1)
+        print(
+            f"[Agent-Team v2 Worker] {args.worker_id} completed={completed} "
+            f"idle_rounds={idle_rounds}"
+        )
+        return
+
+    if args.agent_team_v2_demo:
+        title = args.objective or "真实飞书 Base Agent-Team v2 验证"
+        description = args.objective_description or (
+            "验证飞书 Base 作为任务看板控制平面，支撑多进程 worker "
+            "完成任务 ID 依赖、竞争领取、产物写回、消息、验证和目标完成。"
+        )
+        result = run_agent_team_v2_base_demo(
+            manager_api=manager_api,
+            llm=llm,
+            title=title,
+            description=description,
+            max_tasks=args.agent_team_max_tasks,
+            workers=args.workers,
+        )
+        _print_agent_team_v2_demo(result)
         return
 
     # ── Merge args with demo file ──────────────────────────
