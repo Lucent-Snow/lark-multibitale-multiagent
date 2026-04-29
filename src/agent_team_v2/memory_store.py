@@ -228,6 +228,13 @@ class InMemoryAgentTeamV2Store:
             }
             return artifact_id
 
+    def list_artifacts(self, objective_id: str) -> list[dict]:
+        with self._lock:
+            return [
+                artifact for artifact in self.artifacts.values()
+                if artifact["objective_id"] == objective_id
+            ]
+
     def create_verification(self, objective_id: str, task_id: str, verifier: str,
                             verdict: str, issues: str = "",
                             suggestions: str = "") -> str:
@@ -284,4 +291,3 @@ class InMemoryAgentTeamV2Store:
                 "edges": [edge.__dict__ for edge in self.edges.values()],
                 "claims": [claim.__dict__ for claim in self.claims.values()],
             }, ensure_ascii=False, indent=2)
-

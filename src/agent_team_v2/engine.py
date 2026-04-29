@@ -120,7 +120,9 @@ Max tasks: {max_tasks}
         normalized = [
             TaskPlan(
                 subject=plan.subject,
-                description=plan.description,
+                description=_with_objective_context(
+                    plan.description, title, description
+                ),
                 role=plan.role,
                 blocked_by_subjects=[
                     blocker for blocker in plan.blocked_by_subjects
@@ -160,7 +162,16 @@ Max tasks: {max_tasks}
                 blocked_by_subjects=["Analyze completion evidence"],
             ),
         ]
-        return plans[:max_tasks]
+        return [
+            TaskPlan(
+                subject=plan.subject,
+                description=_with_objective_context(plan.description, title, description),
+                role=plan.role,
+                blocked_by_subjects=plan.blocked_by_subjects,
+                metadata=plan.metadata,
+            )
+            for plan in plans[:max_tasks]
+        ]
 
 
 class AgentTeamV2Engine:
@@ -282,7 +293,8 @@ class WorkerV2:
                 "status": TASK_IN_PROGRESS,
                 "owner": self.worker_id,
             })
-            artifact_content = self.artifact_fn(active_task)
+            task_with_context = self._with_dependency_context(active_task)
+            artifact_content = self.artifact_fn(task_with_context)
             artifact_id = self.store.create_artifact(
                 self.objective_id,
                 active_task.task_id,
@@ -445,6 +457,52 @@ class WorkerV2:
             "Result: completed through the agent-team v2 task-board protocol."
         )
 
+    def _with_dependency_context(self, task: V2Task) -> V2Task:
+        context = self._dependency_artifact_context(task)
+        if not context:
+            return task
+        return V2Task(
+            task_id=task.task_id,
+            objective_id=task.objective_id,
+            subject=task.subject,
+            description=(
+                f"{task.description}\n\n"
+                "Dependency artifacts available to this worker:\n"
+                f"{context}"
+            ),
+            role=task.role,
+            status=task.status,
+            owner=task.owner,
+            lease_until=task.lease_until,
+            attempt_count=task.attempt_count,
+            metadata=task.metadata,
+        )
+
+    def _dependency_artifact_context(self, task: V2Task) -> str:
+        blocker_ids = [
+            edge.from_task_id for edge in self.store.list_edges(self.objective_id)
+            if edge.to_task_id == task.task_id
+        ]
+        if not blocker_ids:
+            return ""
+        artifacts = [
+            artifact for artifact in self.store.list_artifacts(self.objective_id)
+            if artifact.get("task_id") in blocker_ids
+        ]
+        if not artifacts:
+            return "No upstream artifact has been written yet."
+        chunks = []
+        for artifact in sorted(artifacts, key=lambda item: item.get("created_at", "")):
+            content = str(artifact.get("content") or "")
+            if len(content) > 4000:
+                content = content[:4000] + "\n[truncated]"
+            chunks.append(
+                f"- Artifact {artifact.get('artifact_id')} "
+                f"from task {artifact.get('task_id')} "
+                f"by {artifact.get('author')}:\n{content}"
+            )
+        return "\n\n".join(chunks)
+
     def _recover_failed_execution(self, task: V2Task, exc: Exception) -> None:
         self.store.update_task(self.objective_id, task.task_id, {
             "status": TASK_PENDING,
@@ -486,6 +544,13 @@ def _verification_verdict(verification: dict) -> str:
         or verification.get("VerDICT")
         or ""
     )
+
+
+def _with_objective_context(brief: str, title: str, description: str) -> str:
+    objective = f"Objective title: {title}\nObjective description:\n{description}"
+    if title in brief and description in brief:
+        return brief
+    return f"{brief}\n\nShared objective context:\n{objective}"
 
 
 def _scalar(value, default: str = "") -> str:
