@@ -246,6 +246,13 @@ class BaseAgentTeamV2Store:
         self.base.update_record(self._table("v2_artifacts"), record_id, {"artifact_id": record_id})
         return record_id
 
+    def list_artifacts(self, objective_id: str) -> list[dict]:
+        return [
+            self._artifact_from_record(record)
+            for record in self.base.list_records(self._table("v2_artifacts"))
+            if self._scalar((record.fields or {}).get("objective_id")) == objective_id
+        ]
+
     def create_verification(self, objective_id: str, task_id: str, verifier: str,
                             verdict: str, issues: str = "",
                             suggestions: str = "") -> str:
@@ -333,3 +340,14 @@ class BaseAgentTeamV2Store:
             created_at=self._scalar(fields.get("创建时间")),
         )
 
+    def _artifact_from_record(self, record) -> dict:
+        fields = record.fields or {}
+        return {
+            "artifact_id": self._scalar(fields.get("artifact_id"), record.record_id),
+            "objective_id": self._scalar(fields.get("objective_id")),
+            "task_id": self._scalar(fields.get("task_id")),
+            "author": self._scalar(fields.get("作者")),
+            "title": self._scalar(fields.get("标题")),
+            "content": self._scalar(fields.get("内容")),
+            "created_at": self._scalar(fields.get("创建时间")),
+        }

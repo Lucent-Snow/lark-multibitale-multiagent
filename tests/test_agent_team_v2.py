@@ -1,6 +1,8 @@
 import unittest
+import io
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from contextlib import redirect_stdout
 from unittest.mock import patch
 
 from src.agent_team_v2.contracts import (
@@ -15,6 +17,7 @@ from src.agent_team_v2.contracts import (
 from src.agent_team_v2.base_store import BaseAgentTeamV2Store
 from src.agent_team_v2.demo import (
     V2_WORKERS,
+    _progress_summary,
     create_agent_team_v2_tables,
     run_agent_team_v2_memory_demo,
     run_agent_team_v2_base_demo,
@@ -139,6 +142,9 @@ class AgentTeamV2Tests(unittest.TestCase):
         plans = LeaderV2(llm).plan("Launch", "Plan launch content")
 
         self.assertEqual(plans[0].blocked_by_subjects, ["Research market"])
+        self.assertIn("Shared objective context", plans[0].description)
+        self.assertIn("Launch", plans[0].description)
+        self.assertIn("Plan launch content", plans[0].description)
 
     def test_leader_falls_back_on_duplicate_subjects(self):
         llm = FakeLLM("""[
@@ -154,6 +160,14 @@ class AgentTeamV2Tests(unittest.TestCase):
             "Analyze completion evidence",
             "Verify final quality",
         ])
+
+    def test_fallback_plan_keeps_all_tasks_self_contained(self):
+        plans = LeaderV2(None).plan("OBJ", "DESC", max_tasks=4)
+
+        self.assertEqual(len(plans), 4)
+        for plan in plans:
+            self.assertIn("OBJ", plan.description)
+            self.assertIn("DESC", plan.description)
 
     def test_start_objective_creates_task_id_edges(self):
         store = InMemoryAgentTeamV2Store()
@@ -302,6 +316,36 @@ class AgentTeamV2Tests(unittest.TestCase):
         self.assertEqual(len(store.artifacts), 1)
         self.assertEqual(len(store.messages), 1)
         self.assertEqual(len(store.verifications), 1)
+
+    def test_worker_receives_direct_dependency_artifacts(self):
+        store = InMemoryAgentTeamV2Store()
+        objective_id = store.create_objective("目标", "说明")
+        research = store.create_task(objective_id, TaskPlan(
+            subject="Research",
+            description="Research",
+            role="researcher",
+        ))
+        draft = store.create_task(objective_id, TaskPlan(
+            subject="Draft",
+            description="Draft",
+            role="editor",
+        ))
+        store.create_edge(objective_id, research.task_id, draft.task_id)
+        store.update_task(objective_id, research.task_id, {"status": TASK_COMPLETED})
+        store.create_artifact(
+            objective_id, research.task_id, "researcher-1", "Research output",
+            "Upstream evidence A",
+        )
+        seen = {}
+
+        def capture(task):
+            seen["description"] = task.description
+            return "Draft grounded in upstream evidence."
+
+        WorkerV2(store, objective_id, "editor-1", "editor", artifact_fn=capture).run_once()
+
+        self.assertIn("Dependency artifacts available", seen["description"])
+        self.assertIn("Upstream evidence A", seen["description"])
 
     def test_objective_requires_verification_before_completion(self):
         store = InMemoryAgentTeamV2Store()
@@ -456,6 +500,37 @@ class AgentTeamV2Tests(unittest.TestCase):
         self.assertTrue(verification_id)
         self.assertEqual(len(store.list_verifications(objective_id)), 1)
 
+    def test_base_store_worker_receives_direct_dependency_artifacts(self):
+        base = FakeV2BaseClient()
+        store = BaseAgentTeamV2Store(base)
+        objective_id = store.create_objective("目标", "说明")
+        research = store.create_task(objective_id, TaskPlan(
+            subject="Research",
+            description="Research",
+            role="researcher",
+        ))
+        draft = store.create_task(objective_id, TaskPlan(
+            subject="Draft",
+            description="Draft",
+            role="editor",
+        ))
+        store.create_edge(objective_id, research.task_id, draft.task_id)
+        store.update_task(objective_id, research.task_id, {"status": TASK_COMPLETED})
+        store.create_artifact(
+            objective_id, research.task_id, "researcher-1", "Research output",
+            "Base upstream evidence",
+        )
+        seen = {}
+
+        def capture(task):
+            seen["description"] = task.description
+            return "Draft grounded in Base upstream evidence."
+
+        WorkerV2(store, objective_id, "editor-1", "editor", artifact_fn=capture).run_once()
+
+        self.assertIn("Dependency artifacts available", seen["description"])
+        self.assertIn("Base upstream evidence", seen["description"])
+
     def test_worker_roles_are_available_for_real_demo(self):
         roles = {role for _worker_id, role in V2_WORKERS}
 
@@ -475,22 +550,40 @@ class AgentTeamV2Tests(unittest.TestCase):
         base = FakeV2BaseClient()
 
         with patch("src.agent_team_v2.demo.subprocess.Popen", FakeProcess):
-            result = run_agent_team_v2_base_demo(
-                manager_api=base,
-                llm=FakeLLM("""[
-                  {"subject": "Manage", "description": "Manage", "role": "manager", "blocked_by_subjects": [], "metadata": {}}
-                ]"""),
-                title="目标",
-                description="说明",
-                max_tasks=1,
-                workers=1,
-                timeout_seconds=0,
-            )
+            with redirect_stdout(io.StringIO()):
+                result = run_agent_team_v2_base_demo(
+                    manager_api=base,
+                    llm=FakeLLM("""[
+                      {"subject": "Manage", "description": "Manage", "role": "manager", "blocked_by_subjects": [], "metadata": {}}
+                    ]"""),
+                    title="目标",
+                    description="说明",
+                    max_tasks=1,
+                    workers=1,
+                    timeout_seconds=0,
+                )
 
         self.assertFalse(result["objective_completed"])
         self.assertEqual(len(FakeProcess.instances), 1)
         self.assertTrue(FakeProcess.instances[0].terminated)
         self.assertTrue(FakeProcess.instances[0].waited)
+
+    def test_progress_summary_reports_control_plane_counts(self):
+        store = InMemoryAgentTeamV2Store()
+        objective_id = store.create_objective("目标", "说明")
+        task = store.create_task(objective_id, TaskPlan(
+            subject="Research",
+            description="Research",
+            role="researcher",
+        ))
+        store.create_artifact(objective_id, task.task_id, "researcher-1", "Out", "Text")
+        store.create_verification(objective_id, task.task_id, "reviewer-1", VERIFICATION_PASS)
+
+        summary = _progress_summary(store, objective_id)
+
+        self.assertIn("pending=1", summary)
+        self.assertIn("artifacts=1", summary)
+        self.assertIn("verifications=1", summary)
 
 
 if __name__ == "__main__":

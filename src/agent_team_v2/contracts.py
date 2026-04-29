@@ -133,6 +133,9 @@ class AgentTeamV2Store(Protocol):
                         title: str, content: str) -> str:
         ...
 
+    def list_artifacts(self, objective_id: str) -> list[dict]:
+        ...
+
     def create_verification(self, objective_id: str, task_id: str, verifier: str,
                             verdict: str, issues: str = "",
                             suggestions: str = "") -> str:

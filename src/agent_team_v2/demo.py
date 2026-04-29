@@ -87,8 +87,14 @@ def run_agent_team_v2_base_demo(manager_api: BaseClient, llm: LLMClient,
     """Run a real Base-backed v2 demo using worker subprocesses."""
     store = BaseAgentTeamV2Store(manager_api)
     engine = AgentTeamV2Engine(store, LeaderV2(llm))
+    print("[Agent-Team v2] planning objective with LLM...", flush=True)
     objective = engine.start_objective(title, description, max_tasks=max_tasks)
     objective_id = objective["objective_id"]
+    print(
+        f"[Agent-Team v2] objective planned: {objective_id} "
+        f"tasks={len(objective['tasks'])} edges={len(objective['edge_ids'])}",
+        flush=True,
+    )
 
     selected_workers = select_agent_team_v2_workers(workers)
     processes = []
@@ -111,8 +117,13 @@ def run_agent_team_v2_base_demo(manager_api: BaseClient, llm: LLMClient,
 
     deadline = time.time() + timeout_seconds
     objective_completed = False
+    last_progress = ""
     while time.time() < deadline:
         objective_completed = engine.complete_objective_if_ready(objective_id)
+        progress = _progress_summary(store, objective_id)
+        if progress != last_progress:
+            print(f"[Agent-Team v2] {progress}", flush=True)
+            last_progress = progress
         if objective_completed:
             break
         if all(process.poll() is not None for process in processes):
@@ -152,10 +163,30 @@ def make_llm_artifact_fn(llm: LLMClient, worker_id: str, role: str) -> Callable[
             f"You are worker {worker_id} with role {role}.",
             (
                 "Complete the assigned task. Write concise Chinese output that can "
-                "be stored as a durable artifact.\n\n"
+                "be stored as a durable artifact.\n"
+                "If dependency artifacts are provided, ground your answer in them "
+                "and explicitly point out gaps instead of inventing evidence. "
+                "Do not fabricate statistics, benchmarks, APIs, or customer facts. "
+                "When using assumptions, label them as assumptions.\n\n"
                 f"Task: {task.subject}\n\n{task.description}"
             ),
             temperature=0.4,
             max_tokens=1200,
         )
     return generate
+
+
+def _progress_summary(store, objective_id: str) -> str:
+    tasks = store.list_tasks(objective_id)
+    counts = {}
+    for task in tasks:
+        counts[task.status] = counts.get(task.status, 0) + 1
+    artifacts = store.list_artifacts(objective_id)
+    verifications = store.list_verifications(objective_id)
+    status_text = ", ".join(
+        f"{status}={count}" for status, count in sorted(counts.items())
+    ) or "no tasks"
+    return (
+        f"tasks[{status_text}] "
+        f"artifacts={len(artifacts)} verifications={len(verifications)}"
+    )
