@@ -6,7 +6,12 @@ import time
 from typing import Callable
 
 from src.agent_team_v2.base_store import BaseAgentTeamV2Store
-from src.agent_team_v2.contracts import TASK_COMPLETED, V2Task
+from src.agent_team_v2.contracts import (
+    TASK_COMPLETED,
+    VERIFICATION_FAIL,
+    VERIFICATION_PASS,
+    V2Task,
+)
 from src.agent_team_v2.engine import AgentTeamV2Engine, LeaderV2, WorkerV2
 from src.agent_team_v2.memory_store import InMemoryAgentTeamV2Store
 from src.agent_team_v2.schemas import V2_TABLE_SCHEMAS
@@ -174,6 +179,52 @@ def make_llm_artifact_fn(llm: LLMClient, worker_id: str, role: str) -> Callable[
             max_tokens=1200,
         )
     return generate
+
+
+def make_llm_verification_fn(llm: LLMClient, worker_id: str) -> Callable[[V2Task, str], dict]:
+    """Build a quality verifier for worker artifacts."""
+    def verify(task: V2Task, artifact_content: str) -> dict:
+        response = llm.chat_with_system(
+            f"You are the quality verifier for worker {worker_id}.",
+            (
+                "Judge whether the artifact satisfies the task. Return JSON only "
+                "with keys: verdict, issues, suggestions. verdict must be PASS or FAIL.\n"
+                "Fail if the artifact fabricates unsupported statistics, ignores "
+                "dependency artifacts, omits the required objective context, or is empty. "
+                "Passing does not require perfect prose, but it must be usable and grounded.\n\n"
+                f"Task subject: {task.subject}\n\n"
+                f"Task description:\n{task.description}\n\n"
+                f"Artifact:\n{artifact_content}"
+            ),
+            temperature=0.0,
+            max_tokens=500,
+        )
+        return _parse_verification_response(response)
+    return verify
+
+
+def _parse_verification_response(response: str) -> dict:
+    import json
+
+    payload = None
+    try:
+        payload = json.loads(response)
+    except json.JSONDecodeError:
+        payload = None
+    if not isinstance(payload, dict):
+        return {
+            "verdict": VERIFICATION_FAIL,
+            "issues": "Verifier returned non-JSON output.",
+            "suggestions": response[:500],
+        }
+    verdict = str(payload.get("verdict") or "").strip().upper()
+    if verdict not in {VERIFICATION_PASS, VERIFICATION_FAIL}:
+        verdict = VERIFICATION_FAIL
+    return {
+        "verdict": verdict,
+        "issues": str(payload.get("issues") or ""),
+        "suggestions": str(payload.get("suggestions") or ""),
+    }
 
 
 def _progress_summary(store, objective_id: str) -> str:

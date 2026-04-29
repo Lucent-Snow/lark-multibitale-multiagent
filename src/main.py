@@ -33,6 +33,7 @@ from src.agent_team_v2.base_store import BaseAgentTeamV2Store
 from src.agent_team_v2.demo import (
     create_agent_team_v2_tables,
     make_llm_artifact_fn,
+    make_llm_verification_fn,
     run_agent_team_v2_base_demo,
     run_agent_team_v2_memory_demo,
 )
@@ -308,6 +309,7 @@ def main():
             worker_id=args.worker_id,
             role=args.worker_role,
             artifact_fn=make_llm_artifact_fn(llm, args.worker_id, args.worker_role),
+            verification_fn=make_llm_verification_fn(llm, args.worker_id),
         )
         completed = 0
         idle_rounds = 0
