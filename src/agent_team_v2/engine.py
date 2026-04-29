@@ -14,8 +14,10 @@ from src.agent_team_v2.contracts import (
     CLAIM_WON,
     TASK_CLAIMED,
     TASK_COMPLETED,
+    TASK_FAILED,
     TASK_IN_PROGRESS,
     TASK_PENDING,
+    VERIFICATION_FAIL,
     VERIFICATION_PASS,
     WORKER_IDLE,
     WORKER_WORKING,
@@ -256,12 +258,14 @@ class WorkerV2:
     def __init__(self, store: AgentTeamV2Store, objective_id: str,
                  worker_id: str, role: str,
                  artifact_fn: Callable[[V2Task], str] | None = None,
+                 verification_fn: Callable[[V2Task, str], dict] | None = None,
                  lease_seconds: int = 120):
         self.store = store
         self.objective_id = objective_id
         self.worker_id = worker_id
         self.role = role
         self.artifact_fn = artifact_fn or self._default_artifact
+        self.verification_fn = verification_fn or self._default_verification
         self.lease_seconds = lease_seconds
 
     def register(self) -> None:
@@ -302,6 +306,45 @@ class WorkerV2:
                 f"{active_task.subject} output",
                 artifact_content,
             )
+            verification = self.verification_fn(task_with_context, artifact_content)
+            verdict = str(verification.get("verdict") or VERIFICATION_FAIL)
+            issues = str(verification.get("issues") or "")
+            suggestions = str(verification.get("suggestions") or "")
+            self.store.create_verification(
+                self.objective_id,
+                active_task.task_id,
+                verifier=f"{self.worker_id}-verifier",
+                verdict=verdict,
+                issues=issues,
+                suggestions=suggestions,
+            )
+            if verdict != VERIFICATION_PASS:
+                failed = self.store.update_task(self.objective_id, active_task.task_id, {
+                    "status": TASK_FAILED,
+                    "owner": self.worker_id,
+                    "completed_at": utc_now(),
+                })
+                self.store.create_message(
+                    self.objective_id,
+                    self.worker_id,
+                    "team-lead",
+                    f"Failed verification for {failed.subject}",
+                    f"Task {failed.task_id} failed verification. Artifact: {artifact_id}",
+                    task_id=failed.task_id,
+                )
+                self.store.log_event(
+                    self.objective_id,
+                    self.worker_id,
+                    "task_verification_failed",
+                    failed.task_id,
+                    issues or suggestions or "Verification failed",
+                )
+                return {
+                    "status": "failed",
+                    "task_id": failed.task_id,
+                    "artifact_id": artifact_id,
+                    "verdict": verdict,
+                }
             completed = self.store.update_task(self.objective_id, active_task.task_id, {
                 "status": TASK_COMPLETED,
                 "owner": self.worker_id,
@@ -314,13 +357,6 @@ class WorkerV2:
                 f"Completed {completed.subject}",
                 f"Task {completed.task_id} completed. Artifact: {artifact_id}",
                 task_id=completed.task_id,
-            )
-            self.store.create_verification(
-                self.objective_id,
-                completed.task_id,
-                verifier=f"{self.worker_id}-verifier",
-                verdict=VERIFICATION_PASS,
-                suggestions="Protocol verification passed for task completion.",
             )
             self.store.log_event(
                 self.objective_id,
@@ -456,6 +492,19 @@ class WorkerV2:
             f"{task.description}\n\n"
             "Result: completed through the agent-team v2 task-board protocol."
         )
+
+    def _default_verification(self, _task: V2Task, artifact_content: str) -> dict:
+        if artifact_content.strip():
+            return {
+                "verdict": VERIFICATION_PASS,
+                "issues": "",
+                "suggestions": "Protocol verification passed for task completion.",
+            }
+        return {
+            "verdict": VERIFICATION_FAIL,
+            "issues": "Artifact content is empty.",
+            "suggestions": "Regenerate the task artifact with concrete content.",
+        }
 
     def _with_dependency_context(self, task: V2Task) -> V2Task:
         context = self._dependency_artifact_context(task)

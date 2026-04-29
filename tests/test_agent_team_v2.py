@@ -10,13 +10,16 @@ from src.agent_team_v2.contracts import (
     CLAIM_EXPIRED,
     TASK_CLAIMED,
     TASK_COMPLETED,
+    TASK_FAILED,
     TASK_PENDING,
+    VERIFICATION_FAIL,
     VERIFICATION_PASS,
     TaskPlan,
 )
 from src.agent_team_v2.base_store import BaseAgentTeamV2Store
 from src.agent_team_v2.demo import (
     V2_WORKERS,
+    _parse_verification_response,
     _progress_summary,
     create_agent_team_v2_tables,
     run_agent_team_v2_memory_demo,
@@ -317,6 +320,36 @@ class AgentTeamV2Tests(unittest.TestCase):
         self.assertEqual(len(store.messages), 1)
         self.assertEqual(len(store.verifications), 1)
 
+    def test_worker_failed_verification_marks_task_failed(self):
+        store = InMemoryAgentTeamV2Store()
+        objective_id = store.create_objective("目标", "说明")
+        task = store.create_task(objective_id, TaskPlan(
+            subject="Research",
+            description="Research",
+            role="researcher",
+        ))
+
+        result = WorkerV2(
+            store,
+            objective_id,
+            "researcher-1",
+            "researcher",
+            artifact_fn=lambda _task: "unsupported claims",
+            verification_fn=lambda _task, _artifact: {
+                "verdict": VERIFICATION_FAIL,
+                "issues": "Unsupported statistics.",
+                "suggestions": "Ground the artifact in evidence.",
+            },
+        ).run_once()
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(store.get_task(objective_id, task.task_id).status, TASK_FAILED)
+        self.assertEqual(len(store.artifacts), 1)
+        self.assertEqual(len(store.verifications), 1)
+        self.assertFalse(
+            AgentTeamV2Engine(store, LeaderV2(None)).complete_objective_if_ready(objective_id)
+        )
+
     def test_worker_receives_direct_dependency_artifacts(self):
         store = InMemoryAgentTeamV2Store()
         objective_id = store.create_objective("目标", "说明")
@@ -584,6 +617,20 @@ class AgentTeamV2Tests(unittest.TestCase):
         self.assertIn("pending=1", summary)
         self.assertIn("artifacts=1", summary)
         self.assertIn("verifications=1", summary)
+
+    def test_parse_verification_response_is_strict(self):
+        passed = _parse_verification_response(
+            '{"verdict": "PASS", "issues": "", "suggestions": "ok"}'
+        )
+        failed = _parse_verification_response("not json")
+        mixed = _parse_verification_response(
+            'note before {"verdict": "PASS", "issues": "", "suggestions": ""} note after'
+        )
+
+        self.assertEqual(passed["verdict"], VERIFICATION_PASS)
+        self.assertEqual(failed["verdict"], VERIFICATION_FAIL)
+        self.assertEqual(mixed["verdict"], VERIFICATION_FAIL)
+        self.assertIn("non-JSON", failed["issues"])
 
 
 if __name__ == "__main__":
