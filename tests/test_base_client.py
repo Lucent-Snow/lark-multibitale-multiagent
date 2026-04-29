@@ -17,6 +17,7 @@ class FakeResponse:
         self.msg = "ok"
         self.data = SimpleNamespace(
             record=SimpleNamespace(record_id=record_id, fields={}),
+            table_id="tbl_created",
             items=items or [],
             has_more=has_more,
             page_token=page_token,
@@ -58,16 +59,38 @@ class FakeRecordApi:
         return self._capture("get", request, option)
 
 
+class FakeTableApi:
+    def __init__(self):
+        self.calls = []
+
+    def create(self, request, option):
+        self.calls.append({
+            "method": "table_create",
+            "app_token": request.app_token,
+            "name": request.request_body.table.name,
+            "fields": [
+                field.field_name
+                for field in request.request_body.table.fields
+            ],
+            "option": option,
+        })
+        return FakeResponse()
+
+
 class FakeLarkClient:
-    def __init__(self, record_api):
+    def __init__(self, record_api, table_api):
         self.bitable = SimpleNamespace(
-            v1=SimpleNamespace(app_table_record=record_api)
+            v1=SimpleNamespace(
+                app_table_record=record_api,
+                app_table=table_api,
+            )
         )
 
 
 class FakeClientBuilder:
-    def __init__(self, record_api):
+    def __init__(self, record_api, table_api):
         self.record_api = record_api
+        self.table_api = table_api
 
     def app_id(self, value):
         return self
@@ -79,15 +102,16 @@ class FakeClientBuilder:
         return self
 
     def build(self):
-        return FakeLarkClient(self.record_api)
+        return FakeLarkClient(self.record_api, self.table_api)
 
 
 class FakeClientFactory:
-    def __init__(self, record_api):
+    def __init__(self, record_api, table_api=None):
         self.record_api = record_api
+        self.table_api = table_api or FakeTableApi()
 
     def builder(self):
-        return FakeClientBuilder(self.record_api)
+        return FakeClientBuilder(self.record_api, self.table_api)
 
 
 class FakeRequestOptionBuilder:
@@ -124,6 +148,18 @@ class BaseClientTests(unittest.TestCase):
             patch("src.auth.app_auth.Credentials", FakeCredentials),
             patch("src.auth.app_auth.get_token", return_value="app_token_value"),
             patch("src.base_client.client.Client", FakeClientFactory(record_api)),
+            patch("lark_oapi.core.token.RequestOptionBuilder", FakeRequestOptionBuilder),
+        ]
+        for item in patches:
+            item.start()
+            self.addCleanup(item.stop)
+        return BaseClient("manager", "base_token_value", self.table_ids)
+
+    def _client_with_table_api(self, record_api, table_api):
+        patches = [
+            patch("src.auth.app_auth.Credentials", FakeCredentials),
+            patch("src.auth.app_auth.get_token", return_value="app_token_value"),
+            patch("src.base_client.client.Client", FakeClientFactory(record_api, table_api)),
             patch("lark_oapi.core.token.RequestOptionBuilder", FakeRequestOptionBuilder),
         ]
         for item in patches:
@@ -197,6 +233,17 @@ class BaseClientTests(unittest.TestCase):
             None,
             "next_page",
         ])
+
+    def test_create_table_uses_text_fields(self):
+        record_api = FakeRecordApi()
+        table_api = FakeTableApi()
+        client = self._client_with_table_api(record_api, table_api)
+
+        table_id = client.create_table("v2_tasks", ["task_id", "状态"])
+
+        self.assertEqual(table_id, "tbl_created")
+        self.assertEqual(table_api.calls[0]["name"], "v2_tasks")
+        self.assertEqual(table_api.calls[0]["fields"], ["task_id", "状态"])
 
 
 if __name__ == "__main__":

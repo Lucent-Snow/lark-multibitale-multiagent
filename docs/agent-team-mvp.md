@@ -110,3 +110,15 @@ lark:
 - 本轮计划任务全部变为 `completed`。
 - 每个完成任务都有对应产物、消息、操作日志和验证记录。
 - 程序末尾读回目标、任务和验证记录，确认 Base 中的数据已经落盘。
+
+## v2 方向
+
+第一阶段证明了 Base-backed agent-team 可以跑通，但它仍是 demo 协议。v2 开始把飞书 Base 明确建模为控制平面，吸收 Claude Code task board 的关键经验：
+
+- 任务依赖使用任务 ID 图，而不是标题文本。
+- worker 领取任务走 claim 记录和赢家判定，避免并发抢占。
+- worker 注册、心跳、idle、当前任务都写入 Base。
+- 消息、产物、验证、事件分表沉淀，避免把普通输出误当作团队通信。
+- objective 完成前必须有任务完成证据和验证记录。
+
+详见 `docs/agent-team-v2.md`。

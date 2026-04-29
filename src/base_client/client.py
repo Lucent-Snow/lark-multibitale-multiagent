@@ -29,6 +29,15 @@ class BaseTableIds:
     messages: str | None = None
     artifacts: str | None = None
     verifications: str | None = None
+    v2_objectives: str | None = None
+    v2_workers: str | None = None
+    v2_tasks: str | None = None
+    v2_task_edges: str | None = None
+    v2_claims: str | None = None
+    v2_messages: str | None = None
+    v2_artifacts: str | None = None
+    v2_verifications: str | None = None
+    v2_events: str | None = None
 
     @classmethod
     def from_config(cls, config: dict) -> "BaseTableIds":
@@ -53,6 +62,15 @@ class BaseTableIds:
             messages=config.get("messages"),
             artifacts=config.get("artifacts"),
             verifications=config.get("verifications"),
+            v2_objectives=config.get("v2_objectives"),
+            v2_workers=config.get("v2_workers"),
+            v2_tasks=config.get("v2_tasks"),
+            v2_task_edges=config.get("v2_task_edges"),
+            v2_claims=config.get("v2_claims"),
+            v2_messages=config.get("v2_messages"),
+            v2_artifacts=config.get("v2_artifacts"),
+            v2_verifications=config.get("v2_verifications"),
+            v2_events=config.get("v2_events"),
         )
 
     def require_agent_team(self) -> None:
@@ -68,6 +86,26 @@ class BaseTableIds:
         if missing:
             raise ValueError(
                 "Missing lark.tables config for agent-team mode: "
+                + ", ".join(missing)
+            )
+
+    def require_agent_team_v2(self) -> None:
+        """Validate optional agent-team v2 table IDs before using that feature."""
+        required = {
+            "v2_objectives": self.v2_objectives,
+            "v2_workers": self.v2_workers,
+            "v2_tasks": self.v2_tasks,
+            "v2_task_edges": self.v2_task_edges,
+            "v2_claims": self.v2_claims,
+            "v2_messages": self.v2_messages,
+            "v2_artifacts": self.v2_artifacts,
+            "v2_verifications": self.v2_verifications,
+            "v2_events": self.v2_events,
+        }
+        missing = [name for name, value in required.items() if not value]
+        if missing:
+            raise ValueError(
+                "Missing lark.tables config for agent-team v2 mode: "
                 + ", ".join(missing)
             )
 
@@ -135,6 +173,30 @@ class BaseClient:
         pass  # Not needed for bot token, SDK handles it internally
 
     # ─── generic table helpers ─────────────────────────────
+
+    def create_table(self, name: str, fields: list[str]) -> str:
+        """Create a Base table with text fields and return the table ID."""
+        headers = [
+            AppTableCreateHeader.builder()
+            .field_name(field_name)
+            .type(1)
+            .build()
+            for field_name in fields
+        ]
+        table = ReqTable.builder() \
+            .name(name) \
+            .default_view_name("Grid") \
+            .fields(headers) \
+            .build()
+        body = CreateAppTableRequestBody.builder().table(table).build()
+        request = CreateAppTableRequest.builder() \
+            .app_token(self.base_token) \
+            .request_body(body) \
+            .build()
+        response = self._client.bitable.v1.app_table.create(request, self._opt())
+        if not response.success():
+            _handle_api_error("create_table", response)
+        return response.data.table_id
 
     def create_record(self, table_id: str, fields: dict) -> str:
         """Create a record in any configured Base table."""

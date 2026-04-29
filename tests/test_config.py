@@ -19,6 +19,15 @@ class ConfigTests(unittest.TestCase):
             "messages": "tbl_messages",
             "artifacts": "tbl_artifacts",
             "verifications": "tbl_verifications",
+            "v2_objectives": "tbl_v2_objectives",
+            "v2_workers": "tbl_v2_workers",
+            "v2_tasks": "tbl_v2_tasks",
+            "v2_task_edges": "tbl_v2_task_edges",
+            "v2_claims": "tbl_v2_claims",
+            "v2_messages": "tbl_v2_messages",
+            "v2_artifacts": "tbl_v2_artifacts",
+            "v2_verifications": "tbl_v2_verifications",
+            "v2_events": "tbl_v2_events",
         })
 
         self.assertEqual(table_ids.tasks, "tbl_tasks")
@@ -27,6 +36,8 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(table_ids.logs, "tbl_logs")
         self.assertEqual(table_ids.objectives, "tbl_objectives")
         self.assertEqual(table_ids.messages, "tbl_messages")
+        self.assertEqual(table_ids.v2_tasks, "tbl_v2_tasks")
+        self.assertEqual(table_ids.v2_events, "tbl_v2_events")
 
     def test_agent_team_tables_are_optional_but_validated_when_used(self):
         table_ids = BaseTableIds.from_config({
@@ -45,6 +56,17 @@ class ConfigTests(unittest.TestCase):
                 "tasks": "tbl_tasks",
                 "contents": "tbl_contents",
             })
+
+    def test_agent_team_v2_tables_are_optional_but_validated_when_used(self):
+        table_ids = BaseTableIds.from_config({
+            "tasks": "tbl_tasks",
+            "contents": "tbl_contents",
+            "reviews": "tbl_reviews",
+            "logs": "tbl_logs",
+        })
+
+        with self.assertRaisesRegex(ValueError, "agent-team v2 mode"):
+            table_ids.require_agent_team_v2()
 
     def test_load_table_ids_from_main_config(self):
         table_ids = _load_table_ids({
