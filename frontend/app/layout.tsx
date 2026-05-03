@@ -3,8 +3,9 @@ import type { ReactNode } from "react";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Agent-Team Command Center",
-  description: "Real Feishu Base control plane for AI digital workers"
+  title: "Command Center · Agent-Team v2",
+  description: "AI digital worker team control plane — lucentsnow",
+  viewport: "width=device-width, initial-scale=1",
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

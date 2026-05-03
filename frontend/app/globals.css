@@ -1,56 +1,119 @@
+/* lucentsnow — Product Surface Design Tokens */
 :root {
-  color-scheme: light;
-  --bg: #f6f7f9;
-  --panel: #ffffff;
-  --panel-soft: #f9fafb;
-  --line: #dde3ea;
-  --line-strong: #c9d3df;
-  --text: #17202a;
-  --muted: #667485;
-  --muted-2: #8b98a8;
-  --accent: #1463ff;
-  --accent-soft: #e7efff;
-  --green: #16885a;
-  --green-soft: #e7f6ef;
-  --yellow: #a56a00;
-  --yellow-soft: #fff4d7;
-  --red: #be2e32;
-  --red-soft: #fde8ea;
-  --ink: #101820;
-  --shadow: 0 14px 34px rgba(16, 24, 32, 0.08);
+  /* Surfaces */
+  --surface-canvas: #f4f8fa;
+  --surface-content: #fafcfd;
+  --surface-raised: #ffffff;
+
+  /* Text */
+  --text-primary: #1c2b36;
+  --text-secondary: #607380;
+  --text-disabled: rgba(28, 43, 54, 0.35);
+
+  /* Accents */
+  --accent-blue: #5299a4;
+  --accent-green: #6b9e82;
+  --accent-blue-fill-weak: rgba(82, 153, 164, 0.05);
+  --accent-blue-fill-mid: rgba(82, 153, 164, 0.10);
+  --accent-blue-fill-strong: rgba(82, 153, 164, 0.20);
+  --accent-green-fill-weak: rgba(107, 158, 130, 0.06);
+
+  /* Borders */
+  --border-subtle: rgba(28, 43, 54, 0.07);
+  --border-component: rgba(82, 153, 164, 0.15);
+  --border-focus: rgba(82, 153, 164, 0.45);
+
+  /* Status */
+  --status-success: #6b9e82;
+  --status-fail: #c0675a;
+  --status-warn: #a08050;
+
+  /* Radius */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-full: 9999px;
+
+  /* Motion */
+  --motion-instant: 100ms;
+  --motion-fast: 200ms;
+  --motion-standard: 300ms;
+
+  /* Font */
+  --font-sans: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: 'Fira Code', 'JetBrains Mono', 'Courier New', monospace;
+
+  /* Spacing */
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-8: 48px;
 }
 
-* {
-  box-sizing: border-box;
-}
+*, *::before, *::after { box-sizing: border-box; }
 
 body {
   margin: 0;
-  background:
-    linear-gradient(180deg, rgba(20, 99, 255, 0.05), transparent 260px),
-    var(--bg);
-  color: var(--text);
-  font-family:
-    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
-    "Microsoft YaHei", sans-serif;
+  background: var(--surface-canvas);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
 }
 
-button,
-input,
-textarea,
-select {
-  font: inherit;
+button, input, textarea, select { font: inherit; }
+
+button { cursor: pointer; }
+button:disabled { cursor: not-allowed; opacity: 0.45; }
+
+code, pre {
+  font-family: var(--font-mono);
+  font-size: 13px;
 }
 
-button {
-  cursor: pointer;
+a { color: var(--accent-blue); text-decoration: none; }
+
+::selection {
+  background: rgba(82, 153, 164, 0.2);
+  color: var(--text-primary);
 }
 
-button:disabled {
-  cursor: not-allowed;
-  opacity: 0.58;
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
-code {
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border-component); border-radius: 3px; }
+
+/* Animations */
+@keyframes breathe {
+  0%, 100% { opacity: 0.4; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.15); }
+}
+
+@keyframes entryFadeUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(82, 153, 164, 0.3); }
+  50% { box-shadow: 0 0 0 6px rgba(82, 153, 164, 0); }
+}
+
+.animate-entry {
+  animation: entryFadeUp var(--motion-standard) ease forwards;
+  opacity: 0;
 }

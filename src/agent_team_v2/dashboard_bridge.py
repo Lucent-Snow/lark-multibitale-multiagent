@@ -55,6 +55,16 @@ def main() -> int:
     recover = subparsers.add_parser("recover-expired")
     recover.add_argument("--objective-id", required=True)
 
+    retry = subparsers.add_parser("retry-failed")
+    retry.add_argument("--objective-id", required=True)
+
+    run = subparsers.add_parser("run-demo")
+    run.add_argument("--title", required=True)
+    run.add_argument("--description", required=True)
+    run.add_argument("--max-tasks", type=int, default=4)
+    run.add_argument("--workers", type=int, default=3)
+    run.add_argument("--timeout", type=int, default=600)
+
     args = parser.parse_args()
     try:
         if args.command == "snapshot":
@@ -65,6 +75,10 @@ def main() -> int:
             payload = start_objective_payload(args)
         elif args.command == "recover-expired":
             payload = recover_expired_payload(args.objective_id)
+        elif args.command == "retry-failed":
+            payload = retry_failed_payload(args.objective_id)
+        elif args.command == "run-demo":
+            payload = run_demo_payload(args)
         else:
             raise BridgeError("parse_args", f"Unsupported command: {args.command}")
         print(json.dumps({"ok": True, "data": payload}, ensure_ascii=False))
@@ -175,6 +189,62 @@ def recover_expired_payload(objective_id: str) -> dict[str, Any]:
         actor="console",
     )
     return {"recovered": recovered}
+
+
+def retry_failed_payload(objective_id: str) -> dict[str, Any]:
+    base, _table_ids = _base_client()
+    store = BaseAgentTeamV2Store(base)
+    retried = AgentTeamV2Engine(store, LeaderV2(None)).retry_failed_tasks(
+        objective_id,
+        actor="console",
+    )
+    return {"retried": retried}
+
+
+def run_demo_payload(args: argparse.Namespace) -> dict[str, Any]:
+    base, _table_ids = _base_client()
+    cfg = _config()
+    llm_cfg = cfg.get("llm") or {}
+    if not llm_cfg.get("api_key") or not llm_cfg.get("endpoint_id"):
+        raise BridgeError("llm_config", "Missing llm.api_key or llm.endpoint_id")
+    store = BaseAgentTeamV2Store(base)
+    llm = LLMClient(llm_cfg["api_key"], llm_cfg["endpoint_id"])
+    engine = AgentTeamV2Engine(store, LeaderV2(llm, False))
+    objective = engine.start_objective(args.title, args.description, max_tasks=args.max_tasks)
+    objective_id = objective["objective_id"]
+
+    from src.agent_team_v2.demo import (
+        run_agent_team_v2_base_demo,
+        select_agent_team_v2_workers,
+    )
+    result = run_agent_team_v2_base_demo(
+        manager_api=base,
+        llm=llm,
+        title=args.title,
+        description=args.description,
+        max_tasks=args.max_tasks,
+        workers=args.workers,
+        timeout_seconds=args.timeout,
+    )
+    tasks = [
+        {
+            "id": task.task_id,
+            "subject": task.subject,
+            "description": task.description[:200],
+            "role": task.role,
+            "status": task.status,
+            "owner": task.owner,
+        }
+        for task in result["tasks"]
+    ]
+    return {
+        "objective_id": result["objective_id"],
+        "tasks": tasks,
+        "all_tasks_completed": result["all_tasks_completed"],
+        "objective_completed": result["objective_completed"],
+        "edge_count": len(result["edges"]),
+        "verification_count": len(result["verifications"]),
+    }
 
 
 def _base_client() -> tuple[BaseClient, BaseTableIds]:
