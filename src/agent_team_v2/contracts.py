@@ -21,6 +21,8 @@ CLAIM_EXPIRED = "expired"
 VERIFICATION_PASS = "PASS"
 VERIFICATION_FAIL = "FAIL"
 
+DEFAULT_MAX_ATTEMPTS = 3
+
 
 @dataclass(frozen=True)
 class TaskPlan:
