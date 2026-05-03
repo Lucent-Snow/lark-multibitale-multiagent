@@ -199,6 +199,8 @@ def main():
                         help="Maximum tasks for one agent-team v2 worker")
     parser.add_argument("--worker-idle-rounds", type=int, default=60,
                         help="Idle polling rounds before a v2 worker exits")
+    parser.add_argument("--agent-team-timeout", type=int, default=600,
+                        help="Timeout seconds for agent-team v2 demo")
 
     args = parser.parse_args()
 
@@ -309,19 +311,29 @@ def main():
             worker_id=args.worker_id,
             role=args.worker_role,
             artifact_fn=make_llm_artifact_fn(llm, args.worker_id, args.worker_role),
-            verification_fn=make_llm_verification_fn(llm, args.worker_id),
+            verification_fn=make_llm_verification_fn(llm, args.worker_id, args.worker_role),
         )
         completed = 0
         idle_rounds = 0
         while completed < args.worker_max_tasks and idle_rounds < args.worker_idle_rounds:
-            result = worker.run_once()
-            if result["status"] == "completed":
-                completed += 1
-                idle_rounds = 0
-            else:
+            try:
+                result = worker.run_once()
+            except Exception:
                 idle_rounds += 1
                 import time
                 time.sleep(1)
+                continue
+            if result["status"] == "completed":
+                completed += 1
+                idle_rounds = 0
+            elif result["status"] == "retry":
+                idle_rounds = 0
+            elif result["status"] == "idle":
+                idle_rounds += 1
+                import time
+                time.sleep(1)
+            else:
+                idle_rounds = 0
         print(
             f"[Agent-Team v2 Worker] {args.worker_id} completed={completed} "
             f"idle_rounds={idle_rounds}"
@@ -341,6 +353,7 @@ def main():
             description=description,
             max_tasks=args.agent_team_max_tasks,
             workers=args.workers,
+            timeout_seconds=args.agent_team_timeout,
         )
         _print_agent_team_v2_demo(result)
         return

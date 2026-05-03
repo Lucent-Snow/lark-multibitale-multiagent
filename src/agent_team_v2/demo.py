@@ -37,12 +37,28 @@ def create_agent_team_v2_tables(base_client: BaseClient) -> dict[str, str]:
 
 
 def select_agent_team_v2_workers(workers: int) -> list[tuple[str, str]]:
-    """Select workers while always keeping a manager fallback."""
-    limit = max(1, min(workers, len(V2_WORKERS)))
-    if limit == 1:
+    """Select workers while always keeping a manager fallback and covering all specialist roles."""
+    if workers <= 0:
         return [("manager-1", "manager")]
-    specialists = [worker for worker in V2_WORKERS if worker[1] != "manager"]
-    return specialists[:limit - 1] + [("manager-1", "manager")]
+    if workers == 1:
+        return [("manager-1", "manager")]
+    if workers >= len(V2_WORKERS):
+        return list(V2_WORKERS)
+    specialists = [w for w in V2_WORKERS if w[1] != "manager"]
+    specialist_roles = len({w[1] for w in specialists})
+    specialist_slots = workers - 1
+    if specialist_slots >= specialist_roles:
+        return specialists[:specialist_slots] + [("manager-1", "manager")]
+    seen_roles = set()
+    picked = []
+    for w in specialists:
+        if w[1] not in seen_roles:
+            picked.append(w)
+            seen_roles.add(w[1])
+    for w in specialists:
+        if w not in picked and len(picked) < specialist_slots:
+            picked.append(w)
+    return picked[:specialist_slots] + [("manager-1", "manager")]
 
 
 def run_agent_team_v2_memory_demo(title: str, description: str,
@@ -88,7 +104,7 @@ def run_agent_team_v2_base_demo(manager_api: BaseClient, llm: LLMClient,
                                 title: str, description: str,
                                 max_tasks: int = 4,
                                 workers: int = 4,
-                                timeout_seconds: int = 300) -> dict:
+                                timeout_seconds: int = 600) -> dict:
     """Run a real Base-backed v2 demo using worker subprocesses."""
     store = BaseAgentTeamV2Store(manager_api)
     engine = AgentTeamV2Engine(store, LeaderV2(llm))
@@ -123,6 +139,7 @@ def run_agent_team_v2_base_demo(manager_api: BaseClient, llm: LLMClient,
     deadline = time.time() + timeout_seconds
     objective_completed = False
     last_progress = ""
+    last_recovery = time.time()
     while time.time() < deadline:
         objective_completed = engine.complete_objective_if_ready(objective_id)
         progress = _progress_summary(store, objective_id)
@@ -133,6 +150,15 @@ def run_agent_team_v2_base_demo(manager_api: BaseClient, llm: LLMClient,
             break
         if all(process.poll() is not None for process in processes):
             break
+        if time.time() - last_recovery > 30:
+            expired = engine.recover_expired_tasks(objective_id)
+            retried = engine.retry_failed_tasks(objective_id)
+            if expired or retried:
+                print(
+                    f"[Agent-Team v2] recovery: expired={expired} retried={retried}",
+                    flush=True,
+                )
+            last_recovery = time.time()
         time.sleep(1)
 
     for process in processes:
@@ -164,43 +190,127 @@ def run_agent_team_v2_base_demo(manager_api: BaseClient, llm: LLMClient,
     }
 
 
+ROLE_ARTIFACT_PROMPTS = {
+    "researcher": (
+        "You are a thorough researcher. Produce a comprehensive investigation report.\n"
+        "Requirements:\n"
+        "- Cover ALL domains mentioned in the task description exhaustively.\n"
+        "- For each finding, note whether it is a verified fact or an assumption.\n"
+        "- Explicitly list information gaps that need further verification.\n"
+        "- Use structured format: ## sections, bullet lists, tables where helpful.\n"
+        "- Aim for depth over breadth: fewer topics fully explored is better than many topics skimmed.\n"
+        "- Output in Chinese."
+    ),
+    "analyst": (
+        "You are a rigorous analyst. Produce a detailed analysis document.\n"
+        "Requirements:\n"
+        "- Evaluate ALL options/frameworks mentioned in the task.\n"
+        "- Quantify trade-offs wherever possible (cost, time, risk, quality dimensions).\n"
+        "- Ground your analysis in the dependency artifacts provided.\n"
+        "- Design concrete, actionable recommendations with timelines and owners.\n"
+        "- Use structured format with clear ## sections.\n"
+        "- When data is unavailable, use reasonable estimates labeled as such.\n"
+        "- Output in Chinese."
+    ),
+    "editor": (
+        "You are a skilled editor. Produce a polished, publication-ready deliverable.\n"
+        "Requirements:\n"
+        "- Integrate ALL dependency artifacts into a coherent, complete final document.\n"
+        "- Do NOT summarize or truncate — produce the FULL content for every section.\n"
+        "- Every section must be self-contained and complete. No placeholder text.\n"
+        "- Cover every required module from the task description.\n"
+        "- Use professional formatting: clear hierarchy of ## headings, tables, checklists.\n"
+        "- If upstream artifacts identify gaps, note them but DO NOT let them block you.\n"
+        "- Output in Chinese, minimum 2000 characters."
+    ),
+    "reviewer": (
+        "You are a meticulous reviewer. Audit the deliverables against requirements.\n"
+        "Requirements:\n"
+        "- Check every required domain from the task description for coverage.\n"
+        "- Verify that all claims are grounded in dependency artifacts or labeled as assumptions.\n"
+        "- Identify specific gaps: what is missing, not just what is weak.\n"
+        "- Provide concrete, actionable suggestions for each issue found.\n"
+        "- Distinguish between blocking issues (must fix) and nice-to-haves.\n"
+        "- Output a structured audit report in Chinese."
+    ),
+    "manager": (
+        "You are a coordinating manager. Synthesize across all inputs to produce a final deliverable.\n"
+        "Requirements:\n"
+        "- Combine ALL dependency artifacts into a unified, comprehensive output.\n"
+        "- Resolve conflicts between upstream findings explicitly.\n"
+        "- Ensure every objective requirement is addressed.\n"
+        "- Use professional formatting with ## sections.\n"
+        "- Output in Chinese, minimum 2000 characters."
+    ),
+}
+
+
 def make_llm_artifact_fn(llm: LLMClient, worker_id: str, role: str) -> Callable[[V2Task], str]:
-    """Build an artifact generator backed by the configured LLM."""
+    """Build an artifact generator with role-specific prompts and retry feedback."""
+    role_prompt = ROLE_ARTIFACT_PROMPTS.get(role, ROLE_ARTIFACT_PROMPTS["editor"])
+
     def generate(task: V2Task) -> str:
+        retry_feedback = ""
+        prev_issues = task.metadata.get("previous_issues", "")
+        prev_suggestions = task.metadata.get("previous_suggestions", "")
+        if prev_issues or prev_suggestions:
+            retry_feedback = (
+                "\n\n*** PREVIOUS ATTEMPT WAS REJECTED ***\n"
+                f"Issues identified: {prev_issues}\n"
+                f"Required fixes: {prev_suggestions}\n"
+                "You MUST address ALL of the above issues in this attempt.\n"
+                "Do NOT repeat the same mistakes.\n"
+            )
+
         return llm.chat_with_system(
-            f"You are worker {worker_id} with role {role}.",
+            f"You are worker {worker_id}. Your role: {role}.\n\n{role_prompt}",
             (
-                "Complete the assigned task. Write concise Chinese output that can "
-                "be stored as a durable artifact.\n"
-                "If dependency artifacts are provided, ground your answer in them "
-                "and explicitly point out gaps instead of inventing evidence. "
-                "Do not fabricate statistics, benchmarks, APIs, or customer facts. "
-                "When using assumptions, label them as assumptions.\n\n"
+                "If dependency artifacts are provided, ground your answer in them. "
+                "Label assumptions clearly. Do not fabricate data.\n\n"
                 f"Task: {task.subject}\n\n{task.description}"
+                f"{retry_feedback}"
             ),
             temperature=0.4,
-            max_tokens=1200,
+            max_tokens=4096,
         )
     return generate
 
 
-def make_llm_verification_fn(llm: LLMClient, worker_id: str) -> Callable[[V2Task, str], dict]:
+def make_llm_verification_fn(llm: LLMClient, worker_id: str,
+                            role: str = "") -> Callable[[V2Task, str], dict]:
     """Build a quality verifier for worker artifacts."""
     def verify(task: V2Task, artifact_content: str) -> dict:
+        role_hint = ""
+        if role in ("reviewer", "analyst"):
+            role_hint = (
+                f"This worker's role is {role}. Identifying gaps, missing evidence, "
+                "or risks in the subject matter IS correct task completion. "
+                "Do NOT fail the artifact for correctly identifying problems — "
+                "only fail if the artifact itself is empty, irrelevant, or fabricated.\n"
+            )
         response = llm.chat_with_system(
             f"You are the quality verifier for worker {worker_id}.",
             (
-                "Judge whether the artifact satisfies the task. Return JSON only "
-                "with keys: verdict, issues, suggestions. verdict must be PASS or FAIL.\n"
-                "Fail if the artifact fabricates unsupported statistics, ignores "
-                "dependency artifacts, omits the required objective context, or is empty. "
-                "Passing does not require perfect prose, but it must be usable and grounded.\n\n"
+                "Judge whether the artifact satisfies the task requirements. "
+                "Return JSON only with keys: verdict, issues, suggestions. "
+                "verdict must be PASS or FAIL.\n\n"
+                "Quality dimensions to check:\n"
+                "1. Completeness: Does it cover ALL required domains from the task?\n"
+                "2. Grounding: Are claims backed by dependency artifacts or labeled as assumptions?\n"
+                "3. Usability: Can a human act on this artifact without further research?\n"
+                "4. Structure: Is it well-organized and readable?\n"
+                "5. Honesty: Are gaps and assumptions clearly identified?\n\n"
+                f"{role_hint}"
+                "Passing threshold: usable and substantially complete, even if not perfect. "
+                "Only FAIL if critical domains are missing, content is fabricated, "
+                "or the artifact is too incomplete to be useful. "
+                "For verifications that pass, issues/suggestions can contain minor improvements.\n\n"
                 f"Task subject: {task.subject}\n\n"
                 f"Task description:\n{task.description}\n\n"
                 f"Artifact:\n{artifact_content}"
             ),
             temperature=0.0,
-            max_tokens=500,
+            max_tokens=1024,
         )
         return _parse_verification_response(response)
     return verify
@@ -235,6 +345,7 @@ def _parse_verification_response(response: str) -> dict:
 
 
 def _contains_blocking_gap(*values: str) -> bool:
+    """Detect self-admission that the artifact itself failed to complete the task."""
     text = "\n".join(values)
     negative_markers = [
         "无信息缺失",
@@ -248,11 +359,12 @@ def _contains_blocking_gap(*values: str) -> bool:
     if any(marker.lower() in lowered for marker in negative_markers):
         return False
     markers = [
-        "信息缺口",
-        "不具备",
-        "not enough evidence",
-        "insufficient evidence",
-        "missing evidence",
+        "cannot complete the task",
+        "unable to produce",
+        "无法完成任务",
+        "无法产出",
+        "artifact is incomplete",
+        "产出不完整",
     ]
     return any(marker.lower() in lowered for marker in markers)
 
