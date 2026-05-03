@@ -404,6 +404,7 @@ class AgentTeamV2Tests(unittest.TestCase):
                 "issues": "Unsupported statistics.",
                 "suggestions": "Ground the artifact in evidence.",
             },
+            max_attempts=1,
         ).run_once()
 
         self.assertEqual(result["status"], "failed")
@@ -413,6 +414,96 @@ class AgentTeamV2Tests(unittest.TestCase):
         self.assertFalse(
             AgentTeamV2Engine(store, LeaderV2(None)).complete_objective_if_ready(objective_id)
         )
+
+    def test_worker_verification_fail_retries_under_max_attempts(self):
+        store = InMemoryAgentTeamV2Store()
+        objective_id = store.create_objective("目标", "说明")
+        task = store.create_task(objective_id, TaskPlan(
+            subject="Research",
+            description="Research",
+            role="researcher",
+        ))
+
+        result = WorkerV2(
+            store,
+            objective_id,
+            "researcher-1",
+            "researcher",
+            artifact_fn=lambda _task: "some content",
+            verification_fn=lambda _task, _artifact: {
+                "verdict": VERIFICATION_FAIL,
+                "issues": "Need more data.",
+                "suggestions": "Add citations.",
+            },
+        ).run_once()
+
+        self.assertEqual(result["status"], "retry")
+        self.assertEqual(store.get_task(objective_id, task.task_id).status, TASK_PENDING)
+        self.assertEqual(store.get_task(objective_id, task.task_id).owner, "")
+        self.assertEqual(len(store.artifacts), 1)
+        self.assertEqual(len(store.verifications), 1)
+
+    def test_worker_verification_fail_exhausts_after_max_attempts(self):
+        store = InMemoryAgentTeamV2Store()
+        objective_id = store.create_objective("目标", "说明")
+        task = store.create_task(objective_id, TaskPlan(
+            subject="Research",
+            description="Research",
+            role="researcher",
+        ))
+        store.update_task(objective_id, task.task_id, {"attempt_count": 3})
+
+        result = WorkerV2(
+            store,
+            objective_id,
+            "researcher-1",
+            "researcher",
+            artifact_fn=lambda _task: "content",
+            verification_fn=lambda _task, _artifact: {
+                "verdict": VERIFICATION_FAIL,
+                "issues": "Still bad.",
+                "suggestions": "",
+            },
+        ).run_once()
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(store.get_task(objective_id, task.task_id).status, TASK_FAILED)
+
+    def test_engine_retry_failed_tasks_resets_under_limit(self):
+        store = InMemoryAgentTeamV2Store()
+        objective_id = store.create_objective("目标", "说明")
+        task = store.create_task(objective_id, TaskPlan(
+            subject="Research",
+            description="Research",
+            role="researcher",
+        ))
+        store.update_task(objective_id, task.task_id, {
+            "status": TASK_FAILED,
+            "attempt_count": 1,
+        })
+
+        retried = AgentTeamV2Engine(store, LeaderV2(None)).retry_failed_tasks(objective_id)
+
+        self.assertEqual(retried, 1)
+        self.assertEqual(store.get_task(objective_id, task.task_id).status, TASK_PENDING)
+
+    def test_engine_retry_failed_tasks_skips_exhausted(self):
+        store = InMemoryAgentTeamV2Store()
+        objective_id = store.create_objective("目标", "说明")
+        task = store.create_task(objective_id, TaskPlan(
+            subject="Research",
+            description="Research",
+            role="researcher",
+        ))
+        store.update_task(objective_id, task.task_id, {
+            "status": TASK_FAILED,
+            "attempt_count": 3,
+        })
+
+        retried = AgentTeamV2Engine(store, LeaderV2(None)).retry_failed_tasks(objective_id)
+
+        self.assertEqual(retried, 0)
+        self.assertEqual(store.get_task(objective_id, task.task_id).status, TASK_FAILED)
 
     def test_worker_receives_direct_dependency_artifacts(self):
         store = InMemoryAgentTeamV2Store()
@@ -637,10 +728,28 @@ class AgentTeamV2Tests(unittest.TestCase):
     def test_real_demo_worker_selection_keeps_manager_fallback(self):
         self.assertEqual(select_agent_team_v2_workers(1), [("manager-1", "manager")])
 
-        roles = [role for _worker_id, role in select_agent_team_v2_workers(4)]
+        roles_4 = [role for _worker_id, role in select_agent_team_v2_workers(4)]
+        self.assertIn("manager", roles_4)
+        self.assertEqual(len(roles_4), 4)
+        self.assertEqual(len(set(roles_4)), 4)
 
+    def test_worker_selection_covers_all_distinct_roles(self):
+        workers_3 = select_agent_team_v2_workers(3)
+        roles_3 = {role for _worker_id, role in workers_3}
+        self.assertIn("manager", roles_3)
+        self.assertEqual(len(workers_3), 3)
+
+        workers_2 = select_agent_team_v2_workers(2)
+        self.assertIn("manager", {r for _, r in workers_2})
+        self.assertEqual(len(workers_2), 2)
+
+    def test_worker_selection_five_includes_all_specialists(self):
+        workers_5 = select_agent_team_v2_workers(5)
+        roles = {role for _worker_id, role in workers_5}
+        self.assertEqual(len(workers_5), 5)
         self.assertIn("manager", roles)
-        self.assertEqual(len(roles), 4)
+        self.assertIn("reviewer", roles)
+        self.assertIn("researcher", roles)
 
     def test_base_demo_cleans_up_worker_processes_on_timeout(self):
         FakeProcess.instances = []
@@ -698,10 +807,19 @@ class AgentTeamV2Tests(unittest.TestCase):
 
     def test_parse_verification_response_fails_blocking_gaps(self):
         result = _parse_verification_response(
-            '{"verdict": "PASS", "issues": "当前存在信息缺口，无法形成结论", "suggestions": "补充证据"}'
+            '{"verdict": "PASS", "issues": "artifact is incomplete, cannot complete the task", '
+            '"suggestions": "regenerate"}'
         )
 
         self.assertEqual(result["verdict"], VERIFICATION_FAIL)
+
+    def test_parse_verification_allows_legitimate_gap_analysis(self):
+        result = _parse_verification_response(
+            '{"verdict": "PASS", "issues": "当前存在信息缺口，建议补充市场数据", '
+            '"suggestions": "补充证据即可"}'
+        )
+
+        self.assertEqual(result["verdict"], VERIFICATION_PASS)
 
     def test_parse_verification_response_allows_negative_gap_statement(self):
         result = _parse_verification_response(
