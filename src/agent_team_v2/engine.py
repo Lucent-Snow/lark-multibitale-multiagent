@@ -12,6 +12,7 @@ from src.agent_team_v2.contracts import (
     CLAIM_EXPIRED,
     CLAIM_LOST,
     CLAIM_WON,
+    DEFAULT_MAX_ATTEMPTS,
     TASK_CLAIMED,
     TASK_COMPLETED,
     TASK_FAILED,
@@ -33,14 +34,23 @@ if TYPE_CHECKING:
 
 V2_LEADER_SYSTEM_PROMPT = """\
 You are the leader of an AI worker team.
-Break the objective into a small task graph.
+Break the objective into a task graph where each task produces a concrete, reviewable artifact.
 
 Rules:
-- Workers cannot see your conversation. Every task description must be self-contained.
+- Workers cannot see your conversation. Every task description must be self-contained and include:
+  1) What specific deliverable to produce
+  2) What domains/aspects to cover (be specific, referencing the objective)
+  3) What format/structure to use
 - Use roles only from: researcher, editor, reviewer, analyst, manager.
-- Prefer 3 to 5 tasks.
+- researcher: investigate facts, constraints, existing solutions, data
+- editor: produce polished final deliverables, reports, integrated documents
+- analyst: evaluate options, quantify trade-offs, design frameworks
+- reviewer: find gaps, assess quality, suggest concrete improvements
+- manager: coordinate across dependencies, synthesize multi-source inputs
+- Prefer 4 to 5 tasks. More tasks = better parallelism and deeper coverage.
+- Each task subject must be specific and descriptive (8-15 Chinese characters).
 - Use blocked_by_subjects to express task dependencies by subject.
-- Include one reviewer task when there are 3 or more tasks.
+- The LAST task must be a reviewer task that audits all previous work.
 - Output JSON only. No markdown.
 """
 
@@ -66,20 +76,29 @@ Objective description:
 {description}
 
 Return a JSON array. Each item must have:
-- subject
-- description
-- role
-- blocked_by_subjects
-- metadata
+- subject: specific, descriptive task name (8-15 Chinese characters)
+- description: detailed instructions covering what to produce, what domains to cover,
+  what structure to use, and how it connects to the objective. Must be 3-5 sentences.
+- role: one of researcher, editor, analyst, reviewer, manager
+- blocked_by_subjects: list of task subjects this depends on (empty for entry tasks)
+- metadata: {{"deliverable_type": "research_report|design_doc|integration_report|audit_report"}}
 
 Max tasks: {max_tasks}
 """
-        response = self.llm.chat_with_system(
-            V2_LEADER_SYSTEM_PROMPT,
-            prompt,
-            temperature=0.2,
-            max_tokens=2048,
-        )
+        try:
+            response = self.llm.chat_with_system(
+                V2_LEADER_SYSTEM_PROMPT,
+                prompt,
+                temperature=0.2,
+                max_tokens=4096,
+            )
+        except Exception as exc:
+            return self._fallback_or_raise(
+                f"Leader LLM call failed: {type(exc).__name__}",
+                title,
+                description,
+                max_tasks,
+            )
         return self._parse(response, title, description, max_tasks)
 
     def _parse(self, response: str, title: str, description: str,
@@ -225,6 +244,14 @@ class AgentTeamV2Engine:
                         max_tasks: int = 5) -> dict:
         """Create an objective, tasks, and task-id dependency edges."""
         plans = self.leader.plan(title, description, max_tasks=max_tasks)
+        fallback_subjects = {
+            "Research objective context",
+            "Draft primary deliverable",
+            "Analyze completion evidence",
+            "Verify final quality",
+        }
+        if {plan.subject for plan in plans} == fallback_subjects:
+            plans = self.leader.plan(title, description, max_tasks=max_tasks)
         objective_id = self.store.create_objective(title, description)
         tasks: list[V2Task] = []
         tasks_by_subject: dict[str, V2Task] = {}
@@ -316,6 +343,33 @@ class AgentTeamV2Engine:
             recovered_count += 1
         return recovered_count
 
+    def retry_failed_tasks(self, objective_id: str, max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+                           actor: str = "team-lead") -> int:
+        """Retry failed tasks that are still under the max attempt threshold."""
+        retried = 0
+        for task in self.store.list_tasks(objective_id):
+            if task.status != TASK_FAILED:
+                continue
+            if task.attempt_count >= max_attempts:
+                continue
+            for claim in self.store.list_claims(objective_id, task.task_id):
+                if claim.status in {CLAIM_ACTIVE, CLAIM_WON}:
+                    self.store.update_claim(objective_id, claim.claim_id, CLAIM_EXPIRED)
+            self.store.update_task(objective_id, task.task_id, {
+                "status": TASK_PENDING,
+                "owner": "",
+                "lease_until": "",
+            })
+            self.store.log_event(
+                objective_id,
+                actor,
+                "task_retry",
+                task.task_id,
+                f"Retrying failed task (attempt {task.attempt_count}/{max_attempts})",
+            )
+            retried += 1
+        return retried
+
 
 class WorkerV2:
     """One worker process participating through the shared v2 task board."""
@@ -324,7 +378,8 @@ class WorkerV2:
                  worker_id: str, role: str,
                  artifact_fn: Callable[[V2Task], str] | None = None,
                  verification_fn: Callable[[V2Task, str], dict] | None = None,
-                 lease_seconds: int = 120):
+                 lease_seconds: int = 120,
+                 max_attempts: int = DEFAULT_MAX_ATTEMPTS):
         self.store = store
         self.objective_id = objective_id
         self.worker_id = worker_id
@@ -332,6 +387,7 @@ class WorkerV2:
         self.artifact_fn = artifact_fn or self._default_artifact
         self.verification_fn = verification_fn or self._default_verification
         self.lease_seconds = lease_seconds
+        self.max_attempts = max_attempts
 
     def register(self) -> None:
         """Register or refresh this worker in the worker table."""
@@ -384,6 +440,39 @@ class WorkerV2:
                 suggestions=suggestions,
             )
             if verdict != VERIFICATION_PASS:
+                if active_task.attempt_count < self.max_attempts:
+                    self._expire_open_claims(active_task.task_id)
+                    retry_metadata = dict(active_task.metadata)
+                    retry_metadata["previous_issues"] = issues
+                    retry_metadata["previous_suggestions"] = suggestions
+                    retried = self.store.update_task(self.objective_id, active_task.task_id, {
+                        "status": TASK_PENDING,
+                        "owner": "",
+                        "lease_until": "",
+                        "metadata": retry_metadata,
+                    })
+                    self.store.create_message(
+                        self.objective_id,
+                        self.worker_id,
+                        "team-lead",
+                        f"Verification failed, retrying {retried.subject}",
+                        f"Task {retried.task_id} attempt {active_task.attempt_count}/{self.max_attempts}: "
+                        f"{issues or 'Verification failed'}. Artifact: {artifact_id}",
+                        task_id=retried.task_id,
+                    )
+                    self.store.log_event(
+                        self.objective_id,
+                        self.worker_id,
+                        "task_verification_retry",
+                        retried.task_id,
+                        f"Retry {active_task.attempt_count}/{self.max_attempts}: {issues or 'Verification failed'}",
+                    )
+                    return {
+                        "status": "retry",
+                        "task_id": retried.task_id,
+                        "artifact_id": artifact_id,
+                        "verdict": verdict,
+                    }
                 failed = self.store.update_task(self.objective_id, active_task.task_id, {
                     "status": TASK_FAILED,
                     "owner": self.worker_id,
@@ -394,7 +483,8 @@ class WorkerV2:
                     self.worker_id,
                     "team-lead",
                     f"Failed verification for {failed.subject}",
-                    f"Task {failed.task_id} failed verification. Artifact: {artifact_id}",
+                    f"Task {failed.task_id} exhausted {self.max_attempts} attempts. "
+                    f"Artifact: {artifact_id}. Issues: {issues}",
                     task_id=failed.task_id,
                 )
                 self.store.log_event(
@@ -402,7 +492,7 @@ class WorkerV2:
                     self.worker_id,
                     "task_verification_failed",
                     failed.task_id,
-                    issues or suggestions or "Verification failed",
+                    issues or suggestions or f"Exhausted {self.max_attempts} attempts",
                 )
                 return {
                     "status": "failed",
@@ -608,12 +698,11 @@ class WorkerV2:
         chunks = []
         for artifact in sorted(artifacts, key=lambda item: item.get("created_at", "")):
             content = str(artifact.get("content") or "")
-            if len(content) > 4000:
-                content = content[:4000] + "\n[truncated]"
+            if len(content) > 2000:
+                content = content[:2000] + "\n[truncated]"
             chunks.append(
-                f"- Artifact {artifact.get('artifact_id')} "
-                f"from task {artifact.get('task_id')} "
-                f"by {artifact.get('author')}:\n{content}"
+                f"- Artifact from task {artifact.get('task_id')}"
+                f" by {artifact.get('author')}:\n{content}"
             )
         return "\n\n".join(chunks)
 
