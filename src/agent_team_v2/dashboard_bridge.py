@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
@@ -18,6 +19,12 @@ from src.agent_team_v2.engine import AgentTeamV2Engine, LeaderV2
 from src.base_client.client import BaseClient, BaseTableIds
 from src.llm.client import LLMClient
 
+
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except Exception:
+    pass
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 CONFIG_PATH = os.path.join(ROOT, "config.yaml")
@@ -65,6 +72,13 @@ def main() -> int:
     run.add_argument("--workers", type=int, default=3)
     run.add_argument("--timeout", type=int, default=600)
 
+    start = subparsers.add_parser("start-demo")
+    start.add_argument("--title", required=True)
+    start.add_argument("--description", required=True)
+    start.add_argument("--max-tasks", type=int, default=4)
+    start.add_argument("--workers", type=int, default=3)
+    start.add_argument("--timeout", type=int, default=600)
+
     args = parser.parse_args()
     try:
         if args.command == "snapshot":
@@ -79,6 +93,8 @@ def main() -> int:
             payload = retry_failed_payload(args.objective_id)
         elif args.command == "run-demo":
             payload = run_demo_payload(args)
+        elif args.command == "start-demo":
+            payload = start_demo_payload(args)
         else:
             raise BridgeError("parse_args", f"Unsupported command: {args.command}")
         print(json.dumps({"ok": True, "data": payload}, ensure_ascii=False))
@@ -168,7 +184,7 @@ def start_objective_payload(args: argparse.Namespace) -> dict[str, Any]:
     if not llm_cfg.get("api_key") or not llm_cfg.get("endpoint_id"):
         raise BridgeError("llm_config", "Missing llm.api_key or llm.endpoint_id")
     store = BaseAgentTeamV2Store(base)
-    llm = LLMClient(llm_cfg["api_key"], llm_cfg["endpoint_id"])
+    llm = LLMClient(llm_cfg["api_key"], llm_cfg["endpoint_id"], timeout=90)
     result = AgentTeamV2Engine(store, LeaderV2(llm, False)).start_objective(
         args.title,
         args.description,
@@ -208,7 +224,7 @@ def run_demo_payload(args: argparse.Namespace) -> dict[str, Any]:
     if not llm_cfg.get("api_key") or not llm_cfg.get("endpoint_id"):
         raise BridgeError("llm_config", "Missing llm.api_key or llm.endpoint_id")
     store = BaseAgentTeamV2Store(base)
-    llm = LLMClient(llm_cfg["api_key"], llm_cfg["endpoint_id"])
+    llm = LLMClient(llm_cfg["api_key"], llm_cfg["endpoint_id"], timeout=90)
     engine = AgentTeamV2Engine(store, LeaderV2(llm, False))
     objective = engine.start_objective(args.title, args.description, max_tasks=args.max_tasks)
     objective_id = objective["objective_id"]
@@ -244,6 +260,44 @@ def run_demo_payload(args: argparse.Namespace) -> dict[str, Any]:
         "objective_completed": result["objective_completed"],
         "edge_count": len(result["edges"]),
         "verification_count": len(result["verifications"]),
+    }
+
+
+def start_demo_payload(args: argparse.Namespace) -> dict[str, Any]:
+    """Plan objective + spawn worker subprocesses, return immediately."""
+    base, _table_ids = _base_client()
+    cfg = _config()
+    llm_cfg = cfg.get("llm") or {}
+    if not llm_cfg.get("api_key") or not llm_cfg.get("endpoint_id"):
+        raise BridgeError("llm_config", "Missing llm.api_key or llm.endpoint_id")
+    store = BaseAgentTeamV2Store(base)
+    llm = LLMClient(llm_cfg["api_key"], llm_cfg["endpoint_id"], timeout=90)
+    engine = AgentTeamV2Engine(store, LeaderV2(llm, False))
+    objective = engine.start_objective(args.title, args.description, max_tasks=args.max_tasks)
+    objective_id = objective["objective_id"]
+
+    from src.agent_team_v2.demo import select_agent_team_v2_workers
+
+    selected = select_agent_team_v2_workers(args.workers)
+    spawned = []
+    for worker_id, role in selected:
+        proc = subprocess.Popen([
+            sys.executable,
+            os.path.join(ROOT, "src", "main.py"),
+            "--agent-team-v2-worker",
+            "--objective-id", objective_id,
+            "--worker-id", worker_id,
+            "--worker-role", role,
+            "--worker-max-tasks", str(args.max_tasks),
+            "--worker-idle-rounds", str(max(60, args.timeout)),
+        ])
+        spawned.append({"worker_id": worker_id, "role": role, "pid": proc.pid})
+
+    return {
+        "objective_id": objective_id,
+        "task_count": len(objective["tasks"]),
+        "edge_count": len(objective["edge_ids"]),
+        "workers_spawned": spawned,
     }
 
 

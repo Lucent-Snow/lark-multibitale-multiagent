@@ -278,6 +278,33 @@
   letter-spacing: 0.06em;
 }
 
+/* Status chips */
+.statusChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: var(--space-3);
+}
+
+.chip {
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: var(--radius-full);
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+
+.chip strong {
+  font-weight: 600;
+  margin-left: 2px;
+}
+
+.chipCompleted { background: rgba(107, 158, 130, 0.10); color: var(--accent-green); }
+.chipActive { background: rgba(82, 153, 164, 0.12); color: var(--accent-blue); }
+.chipClaimed { background: rgba(82, 153, 164, 0.07); color: #5299a4b8; }
+.chipPending { background: rgba(96, 115, 128, 0.08); color: var(--text-secondary); }
+.chipFailed { background: rgba(192, 103, 90, 0.10); color: var(--status-fail); }
+
 /* ===== Task flow ===== */
 .taskList {
   display: grid;
@@ -360,6 +387,22 @@
 .taskTagOwner {
   color: var(--accent-blue);
   border-color: var(--border-component);
+}
+
+.taskTagDep {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: var(--radius-sm);
+  background: rgba(160, 128, 80, 0.06);
+  color: var(--status-warn);
+  border: 1px solid rgba(160, 128, 80, 0.15);
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .taskRight {

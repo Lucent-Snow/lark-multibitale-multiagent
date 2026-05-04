@@ -96,6 +96,7 @@ export default function Home() {
   const [operationToken, setOperationToken] = useState("");
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const loadingRef = useRef(false);
+  const snapshotRef = useRef<Snapshot | null>(null);
 
   const flash = (msg: string, ok = true) => {
     setToast({ msg, ok });
@@ -109,13 +110,18 @@ export default function Home() {
     try {
       const res = await fetch("/api/agent-team/snapshot", { cache: "no-store" });
       const payload = (await res.json()) as ApiResult<Snapshot>;
-      if (!payload.ok) { setError(payload.error); setSnapshot(null); }
-      else { setSnapshot(payload.data); setError(null); setLastUpdated(new Date().toLocaleTimeString()); }
+      if (!payload.ok) {
+        setError(payload.error);
+        if (!snapshotRef.current) setSnapshot(null);
+      } else {
+        snapshotRef.current = payload.data;
+        setSnapshot(payload.data); setError(null);
+        setLastUpdated(new Date().toLocaleTimeString());
+      }
     } catch (err) {
       setError({ code: "CLIENT_FETCH", stage: "client",
         message: err instanceof Error ? err.message : "Fetch failed",
         detail: "", timestamp: new Date().toISOString() });
-      setSnapshot(null);
     } finally { loadingRef.current = false; setLoading(false); }
   };
 
@@ -128,14 +134,21 @@ export default function Home() {
     return () => { window.clearTimeout(t); window.clearInterval(timer); };
   }, []);
 
-  const metrics = useMemo(() => ({
-    workers: snapshot?.workers.length ?? 0,
-    working: snapshot?.workers.filter(w => w.status === "working").length ?? 0,
-    tasks: snapshot?.tasks.length ?? 0,
-    completed: snapshot?.tasks.filter(t => t.status === "completed").length ?? 0,
-    verifications: snapshot?.verifications.length ?? 0,
-    failed: snapshot?.tasks.filter(t => t.status === "failed").length ?? 0,
-  }), [snapshot]);
+  const metrics = useMemo(() => {
+    const counts: Record<string, number> = { pending: 0, claimed: 0, in_progress: 0, completed: 0, failed: 0 };
+    snapshot?.tasks.forEach(t => { counts[t.status] = (counts[t.status] || 0) + 1; });
+    return {
+      workers: snapshot?.workers.length ?? 0,
+      working: snapshot?.workers.filter(w => w.status === "working").length ?? 0,
+      tasks: snapshot?.tasks.length ?? 0,
+      completed: counts.completed,
+      inProgress: counts.in_progress + counts.claimed,
+      pending: counts.pending,
+      failed: counts.failed,
+      verifications: snapshot?.verifications.length ?? 0,
+      counts,
+    };
+  }, [snapshot]);
 
   const selectedObjective = snapshot?.objective ?? null;
   const recipients = useMemo(() =>
@@ -195,23 +208,21 @@ export default function Home() {
     setBusyAction(null);
   }
 
-  async function runDemo() {
+  async function runFullDemo() {
     if (!objectiveTitle.trim() || !objectiveDescription.trim()) return;
     setBusyAction("demo");
-    flash("任务启动中，预计需要几分钟...", true);
-    const result = await post("/api/agent-team/run-demo", {
+    flash("目标已下发，Worker 正在执行...", true);
+    const result = await post("/api/agent-team/start-demo", {
       title: objectiveTitle, description: objectiveDescription,
       maxTasks, workers, timeout,
     });
-    if (!result.ok) { setError(result.error); flash("运行失败", false); }
-    else {
-      const data = (result as { ok: true; data: DemoResult }).data;
-      flash(data?.objective_completed ? "全部任务完成!" : `完成: ${data?.all_tasks_completed ? "是" : "部分"}`);
-      setObjectiveTitle(""); setObjectiveDescription("");
-      setView("monitor");
-      await loadSnapshot();
-    }
+    if (!result.ok) { setError(result.error); flash("启动失败", false); setBusyAction(null); return; }
+    const data = (result as { ok: true; data: { objective_id: string; task_count: number; workers_spawned: unknown[] } }).data;
+    flash(`目标已创建 · ${data.task_count} 个任务 · ${data.workers_spawned.length} 个 Worker 已启动`, true);
+    setObjectiveTitle(""); setObjectiveDescription("");
+    setView("monitor");
     setBusyAction(null);
+    await loadSnapshot();
   }
 
   const connectionState = error ? "error" : snapshot?.empty ? "empty" : loading && !snapshot ? "loading" : "connected";
@@ -240,7 +251,7 @@ export default function Home() {
             runMode={runMode} setRunMode={setRunMode}
             busyAction={busyAction}
             onSubmitObjective={(e) => { e.preventDefault();
-              runMode === "full" ? runDemo() : submitObjective(e); }}
+              runMode === "full" ? runFullDemo() : submitObjective(e); }}
           />
         ) : (
           <Monitor
@@ -278,7 +289,7 @@ export default function Home() {
 /* ===== Sidebar ===== */
 function Sidebar({ view, setView, connectionState, metrics, onRefresh }: {
   view: string; setView: (v: "monitor" | "mission") => void;
-  connectionState: string; metrics: { tasks: number; completed: number };
+  connectionState: string; metrics: Metrics;
   onRefresh: () => void;
 }) {
   return (
@@ -329,10 +340,12 @@ function ConnectionStatus({ state }: { state: string }) {
 }
 
 /* ===== Monitor View ===== */
+type Metrics = { workers: number; working: number; tasks: number; completed: number; inProgress: number; pending: number; failed: number; verifications: number; counts: Record<string, number> };
+
 function Monitor({ snapshot, metrics, selectedObjective, loading, lastUpdated, connectionState, showPanel,
   message, setMessage, recipient, setRecipient, recipients, operationToken, setOperationToken,
   busyAction, onSubmitMessage, onRecover, onRefresh, onTogglePanel }: {
-  snapshot: Snapshot | null; metrics: Record<string, number>;
+  snapshot: Snapshot | null; metrics: Metrics;
   selectedObjective: Objective | null; loading: boolean;
   lastUpdated: string; connectionState: string; showPanel: boolean;
   message: string; setMessage: (v: string) => void;
@@ -370,8 +383,8 @@ function Monitor({ snapshot, metrics, selectedObjective, loading, lastUpdated, c
       {/* Metrics */}
       <div className={styles.metricsGrid}>
         <MetricBox icon={<Users size={16} />} label="数字员工" value={metrics.workers} sub={`${metrics.working} 工作中`} tone="blue" />
-        <MetricBox icon={<GitBranch size={16} />} label="任务" value={metrics.tasks} sub={`${metrics.completed} 已完成`} tone="green" />
-        <MetricBox icon={<ShieldCheck size={16} />} label="质量验证" value={metrics.verifications} sub="" tone="warn" />
+        <MetricBox icon={<GitBranch size={16} />} label="任务" value={metrics.tasks} sub={`${metrics.completed} 完成 · ${metrics.inProgress} 进行中`} tone="green" />
+        <MetricBox icon={<ShieldCheck size={16} />} label="质量验证" value={metrics.verifications} sub={metrics.failed > 0 ? `${metrics.failed} 失败` : "全部通过"} tone="warn" />
         <MetricBox icon={<Activity size={16} />} label="完成率" value={selectedObjective ? Math.round((selectedObjective.progress ?? 0) * 100) : 0} sub="%" tone="blue" />
       </div>
 
@@ -393,6 +406,7 @@ function Monitor({ snapshot, metrics, selectedObjective, loading, lastUpdated, c
               <div className={styles.progressFill} style={{ width: `${Math.round((selectedObjective.progress ?? 0) * 100)}%` }} />
             </div>
           </div>
+          <StatusChips counts={metrics.counts} />
         </div>
       ) : (
         <EmptyState icon={<Cpu size={28} />} text="暂无目标记录 — 前往「任务中心」创建新目标" />
@@ -465,6 +479,7 @@ function TaskCard({ task, edges, allTasks }: { task: Task; edges: Edge[]; allTas
   const statusLabelCls = task.status === "completed" ? styles.taskStatusCompleted
     : task.status === "failed" ? styles.taskStatusFailed
     : task.status === "in_progress" || task.status === "claimed" ? styles.taskStatusActive : styles.taskStatusPending;
+  const findTask = (id: string) => allTasks.find(t => t.id === id);
 
   return (
     <div className={`${styles.taskItem} ${statusCls}`}>
@@ -476,8 +491,14 @@ function TaskCard({ task, edges, allTasks }: { task: Task; edges: Edge[]; allTas
           <div className={styles.taskMeta}>
             <span className={styles.taskTag}>{task.role}</span>
             {task.owner && <span className={`${styles.taskTag} ${styles.taskTagOwner}`}>{task.owner}</span>}
-            {blockers.length > 0 && <span className={styles.taskTag}>依赖 {blockers.length}</span>}
-            {blockedBy.length > 0 && <span className={styles.taskTag}>被依赖 {blockedBy.length}</span>}
+            {blockers.length > 0 && blockers.map(b => {
+              const bt = findTask(b.from_task_id);
+              return (
+                <span key={b.id} className={styles.taskTagDep} title={(bt?.subject ?? b.from_task_id).slice(0, 80)}>
+                  <ArrowRight size={11} /> {(bt?.subject ?? b.from_task_id).slice(0, 30)}
+                </span>
+              );
+            })}
           </div>
         </div>
       </div>
@@ -688,6 +709,31 @@ function ErrorBanner({ error, onDismiss }: { error: ApiError; onDismiss: () => v
         </div>
       </div>
       <button className={styles.btnIcon} onClick={onDismiss}><X size={14} /></button>
+    </div>
+  );
+}
+
+function StatusChips({ counts }: { counts: Record<string, number> }) {
+  const STATUS_CONFIG: Record<string, { label: string; cls: string }> = {
+    completed: { label: "已完成", cls: "chipCompleted" },
+    in_progress: { label: "工作中", cls: "chipActive" },
+    claimed: { label: "已领取", cls: "chipClaimed" },
+    pending: { label: "等待中", cls: "chipPending" },
+    failed: { label: "失败", cls: "chipFailed" },
+  };
+  const order = ["failed", "pending", "claimed", "in_progress", "completed"];
+  return (
+    <div className={styles.statusChips}>
+      {order.map(status => {
+        const count = counts[status] || 0;
+        if (count === 0) return null;
+        const cfg = STATUS_CONFIG[status];
+        return (
+          <span key={status} className={`${styles.chip} ${styles[cfg.cls]}`}>
+            {cfg.label} <strong>{count}</strong>
+          </span>
+        );
+      })}
     </div>
   );
 }

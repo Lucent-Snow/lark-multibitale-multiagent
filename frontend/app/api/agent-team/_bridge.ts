@@ -13,8 +13,8 @@ const repoRoot = path.resolve(process.cwd(), "..");
 const snapshotCache = new Map<string, { expiresAt: number; payload: unknown; status: number }>();
 const inFlightSnapshots = new Map<string, Promise<{ payload: unknown; status: number }>>();
 
-export async function runBridge(args: string[]) {
-  const result = await runBridgeResult(args);
+export async function runBridge(args: string[], timeoutMs = 180_000) {
+  const result = await runBridgeResult(args, timeoutMs);
   return Response.json(result.payload, { status: result.status });
 }
 
@@ -29,7 +29,7 @@ export async function runCachedSnapshot(args: string[]) {
     const result = await existing;
     return Response.json(result.payload, { status: result.status });
   }
-  const pending = runBridgeResult(args).finally(() => {
+  const pending = runBridgeResult(args, 60_000).finally(() => {
     inFlightSnapshots.delete(key);
   });
   inFlightSnapshots.set(key, pending);
@@ -37,7 +37,7 @@ export async function runCachedSnapshot(args: string[]) {
   if (result.status === 200) {
     snapshotCache.set(key, {
       ...result,
-      expiresAt: Date.now() + 5000
+      expiresAt: Date.now() + 20_000
     });
   }
   return Response.json(result.payload, { status: result.status });
@@ -61,7 +61,7 @@ export function requireDashboardWriteAccess(request: Request) {
   return null;
 }
 
-async function runBridgeResult(args: string[]) {
+async function runBridgeResult(args: string[], timeoutMs = 120_000) {
   return new Promise<{ payload: unknown; status: number }>((resolve) => {
     const child = spawn("python", ["-m", "src.agent_team_v2.dashboard_bridge", ...args], {
       cwd: repoRoot,
@@ -76,8 +76,8 @@ async function runBridgeResult(args: string[]) {
     let stderr = "";
     const timeout = setTimeout(() => {
       child.kill();
-      resolve(errorPayload("BRIDGE_TIMEOUT", "bridge_timeout", "Python bridge timed out", safeDetail(stderr), 504));
-    }, 120000);
+      resolve(errorPayload("BRIDGE_TIMEOUT", "bridge_timeout", `Python bridge timed out after ${Math.round(timeoutMs / 1000)}s`, safeDetail(stderr), 504));
+    }, timeoutMs);
 
     child.stdout.on("data", (chunk) => {
       stdout += chunk.toString();
