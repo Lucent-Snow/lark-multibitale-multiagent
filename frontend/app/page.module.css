@@ -776,6 +776,57 @@
   border-bottom-color: var(--accent-blue);
 }
 
+/* ===== Final Report ===== */
+.reportContent {
+  padding: var(--space-3) 0;
+  line-height: 1.8;
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.reportH1 {
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--text-primary);
+  margin: 0 0 var(--space-3);
+  padding-bottom: var(--space-2);
+  border-bottom: 2px solid var(--border-component);
+}
+
+.reportH2 {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text-primary);
+  margin: var(--space-4) 0 var(--space-2);
+}
+
+.reportH3 {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary);
+  margin: var(--space-3) 0 var(--space-1);
+}
+
+.reportP {
+  margin: 0 0 var(--space-2);
+  color: var(--text-secondary);
+}
+
+.reportLi {
+  margin: 2px 0 2px var(--space-4);
+  color: var(--text-secondary);
+  list-style-type: disc;
+  display: list-item;
+}
+
+.reportLiSub {
+  margin: 1px 0 1px var(--space-6);
+  color: var(--text-secondary);
+  font-size: 12px;
+  list-style-type: circle;
+  display: list-item;
+}
+
 /* ===== Artifact viewer ===== */
 .artifactCard {
   padding: var(--space-3);

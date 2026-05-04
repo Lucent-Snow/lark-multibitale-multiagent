@@ -200,21 +200,19 @@ def start_objective_payload(args: argparse.Namespace) -> dict[str, Any]:
 def recover_expired_payload(objective_id: str) -> dict[str, Any]:
     base, _table_ids = _base_client()
     store = BaseAgentTeamV2Store(base)
-    recovered = AgentTeamV2Engine(store, LeaderV2(None)).recover_expired_tasks(
-        objective_id,
-        actor="console",
-    )
-    return {"recovered": recovered}
+    engine = AgentTeamV2Engine(store, LeaderV2(None))
+    recovered = engine.recover_expired_tasks(objective_id, actor="console")
+    completed = engine.complete_objective_if_ready(objective_id)
+    return {"recovered": recovered, "objective_completed": completed}
 
 
 def retry_failed_payload(objective_id: str) -> dict[str, Any]:
     base, _table_ids = _base_client()
     store = BaseAgentTeamV2Store(base)
-    retried = AgentTeamV2Engine(store, LeaderV2(None)).retry_failed_tasks(
-        objective_id,
-        actor="console",
-    )
-    return {"retried": retried}
+    engine = AgentTeamV2Engine(store, LeaderV2(None))
+    retried = engine.retry_failed_tasks(objective_id, actor="console")
+    completed = engine.complete_objective_if_ready(objective_id)
+    return {"retried": retried, "objective_completed": completed}
 
 
 def run_demo_payload(args: argparse.Namespace) -> dict[str, Any]:

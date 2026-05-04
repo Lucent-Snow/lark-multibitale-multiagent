@@ -433,6 +433,30 @@ function Monitor({ snapshot, metrics, selectedObjective, loading, lastUpdated, c
         ) : <EmptyState icon={<GitBranch size={20} />} text="暂无任务" />}
       </div>
 
+      {/* Final Report */}
+      {selectedObjective?.status === "completed" && selectedObjective.final_result && (
+        <div className={styles.card}>
+          <div className={styles.cardHeader}>
+            <div className={styles.cardTitle}>
+              <FileText size={15} className={styles.cardTitleIcon} />
+              最终报告
+            </div>
+            <span className={styles.progressLabel}>已完成</span>
+          </div>
+          <div className={styles.reportContent}>
+            {selectedObjective.final_result.split("\n").map((line, i) => {
+              if (line.startsWith("# ")) return <h2 key={i} className={styles.reportH1}>{line.slice(2)}</h2>;
+              if (line.startsWith("## ")) return <h3 key={i} className={styles.reportH2}>{line.slice(3)}</h3>;
+              if (line.startsWith("### ")) return <h4 key={i} className={styles.reportH3}>{line.slice(4)}</h4>;
+              if (line.startsWith("- ")) return <li key={i} className={styles.reportLi}>{line.slice(2)}</li>;
+              if (line.startsWith("  - ")) return <li key={i} className={styles.reportLiSub}>{line.slice(4)}</li>;
+              if (line.trim() === "") return <br key={i} />;
+              return <p key={i} className={styles.reportP}>{line}</p>;
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Artifacts */}
       <div className={styles.card}>
         <div className={styles.cardHeader}>

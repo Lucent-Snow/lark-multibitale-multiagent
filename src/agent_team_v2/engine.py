@@ -303,9 +303,10 @@ class AgentTeamV2Engine:
         }
         if {task.task_id for task in tasks} - verified_task_ids:
             return False
+        final_report = self._generate_final_report(objective_id, tasks)
         self.store.update_objective(objective_id, {
             "status": "completed",
-            "final_result": "Agent-team v2 objective completed with verification.",
+            "final_result": final_report,
         })
         self.store.log_event(
             objective_id,
@@ -315,6 +316,157 @@ class AgentTeamV2Engine:
             f"Completed {len(tasks)} verified tasks",
         )
         return True
+
+    def _generate_final_report(self, objective_id: str, tasks: list) -> str:
+        """Synthesize all artifacts and verifications into a comprehensive report."""
+        title = ""
+        if tasks:
+            desc = getattr(tasks[0], "description", "") or ""
+            if "Objective title:" in desc:
+                title = desc.split("Objective title:")[-1].split("\n")[0].strip()
+            if not title:
+                title = getattr(tasks[0], "subject", "") or ""
+
+        artifacts = getattr(self.store, "list_artifacts", lambda _: [])(objective_id)
+        verifications = getattr(self.store, "list_verifications", lambda _: [])(objective_id)
+        task_map = {task.task_id: task for task in tasks}
+
+        artifact_entries = []
+        for artifact in artifacts:
+            task_id = getattr(artifact, "task_id", "")
+            task = task_map.get(task_id)
+            content = getattr(artifact, "content", str(artifact))
+            title_a = getattr(artifact, "title", "") or ""
+            author = getattr(artifact, "author", "") or ""
+            artifact_entries.append({
+                "task_subject": task.subject if task else "",
+                "task_role": task.role if task else "",
+                "title": title_a,
+                "author": author,
+                "content": content[:3000],
+            })
+
+        verification_entries = []
+        for verification in verifications:
+            v_dict = getattr(verification, "fields", None) or verification
+            if isinstance(v_dict, dict):
+                v_dict = dict(v_dict)
+            else:
+                v_dict = {}
+            verification_entries.append({
+                "verdict": str(v_dict.get("结论") or v_dict.get("verdict") or ""),
+                "issues": str(v_dict.get("问题") or v_dict.get("issues") or ""),
+                "suggestions": str(v_dict.get("建议") or v_dict.get("suggestions") or ""),
+            })
+
+        if self.leader.llm:
+            return self._llm_final_report(title, artifact_entries, verification_entries, tasks)
+        return self._template_final_report(title, artifact_entries, verification_entries, tasks)
+
+    def _llm_final_report(self, title: str, artifacts: list,
+                          verifications: list, tasks: list) -> str:
+        """Generate a professional report via LLM."""
+        task_summary = "\n".join(
+            f"- [{task.role}] {task.subject} → {task.status}"
+            for task in tasks
+        )
+        artifact_summary = "\n\n---\n\n".join(
+            f"Task: {entry['task_subject']} ({entry['task_role']})\n"
+            f"Author: {entry['author']}\n"
+            f"Content:\n{entry['content']}"
+            for entry in artifacts
+        )
+        verification_summary = "\n".join(
+            f"- Verdict: {entry['verdict']}\n"
+            f"  Issues: {entry['issues'][:200]}\n"
+            f"  Suggestions: {entry['suggestions'][:200]}"
+            for entry in verifications
+        )
+        prompt = f"""\
+You are the team leader writing the final project report. Synthesize ALL artifacts below into a comprehensive, professional report in Chinese.
+
+Objective: {title}
+
+## Task Overview
+{task_summary}
+
+## Worker Artifacts
+{artifact_summary}
+
+## Quality Verifications
+{verification_summary}
+
+Write a final report structured as follows, using markdown formatting:
+
+# {title} — 项目总结报告
+
+## 一、执行摘要
+(3-5 sentences summarizing what was accomplished, key outcomes, and overall assessment)
+
+## 二、任务完成情况
+(Per-task summary: what each role produced, key findings, and quality)
+
+## 三、核心发现与洞察
+(Synthesize cross-cutting themes, patterns, and insights from ALL artifacts. Identify what the different workers collectively discovered)
+
+## 四、质量评估
+(Summary of verification results, any issues found and addressed)
+
+## 五、结论与建议
+(Concrete, actionable conclusions and recommendations for next steps)
+
+Requirements:
+- Quote specific data and findings from the artifacts — do NOT write generic summaries
+- Be thorough: report must be 800-1500 Chinese characters
+- Markdown format with clear section headings
+- Professional tone suitable for leadership review
+"""
+        return self.leader.llm.chat_with_system(
+            "You are a senior manager writing the final project closeout report. "
+            "Your report is data-driven, specific, and actionable.",
+            prompt,
+            temperature=0.3,
+            max_tokens=4096,
+        )
+
+    def _template_final_report(self, title: str, artifacts: list,
+                               verifications: list, tasks: list) -> str:
+        """Generate a structured report without LLM (offline/demo mode)."""
+        lines = [
+            f"# {title} — 项目总结报告",
+            "",
+            "## 一、执行摘要",
+            "",
+            f"本项目共完成 {len(tasks)} 个任务，"
+            f"产出 {len(artifacts)} 件交付物，"
+            f"通过 {len([v for v in verifications if v['verdict'] == 'PASS'])} 项质量验证。",
+            "",
+            "## 二、任务完成情况",
+            "",
+        ]
+        for task in tasks:
+            tsub = getattr(task, "subject", "") or getattr(task, "task_id", "")
+            trole = getattr(task, "role", "") or ""
+            tstatus = getattr(task, "status", "") or ""
+            task_artifacts = [a for a in artifacts if a['task_subject'] == tsub]
+            lines.append(f"### {tsub}")
+            lines.append(f"- 角色: {trole} | 状态: {tstatus}")
+            for a in task_artifacts:
+                lines.append(f"- 产出: {a['title']} (作者: {a['author']})")
+                lines.append(f"- 内容摘要: {a['content'][:300]}...")
+            lines.append("")
+        lines.append("## 三、质量评估")
+        lines.append("")
+        for v in verifications:
+            lines.append(f"- 结论: {v['verdict']}")
+            if v['issues']:
+                lines.append(f"  - 问题: {v['issues'][:200]}")
+            if v['suggestions']:
+                lines.append(f"  - 建议: {v['suggestions'][:200]}")
+        lines.append("")
+        lines.append("## 四、结论")
+        lines.append(f"所有 {len(tasks)} 个任务已完成并通过验证，目标达成。")
+        return "\n".join(lines)
 
     def recover_expired_tasks(self, objective_id: str, actor: str = "team-lead") -> int:
         """Recover expired leased tasks without requiring a worker claim attempt."""
