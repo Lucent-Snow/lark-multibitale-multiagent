@@ -1,0 +1,22 @@
+# 飞书多维表格 Multi-Agent Network 配置文件
+# 请复制此文件为 config.yaml 并填入实际值
+
+lark:
+  app_id: "cli_xxxx"
+  app_secret: ""  # 请从飞书开放平台获取
+  base_token: "PwbHb8a9DavwwEsxZhcctWgAnWe"
+
+agents:
+  manager:
+    name: "运营主管"
+    description: "负责任务分配、进度跟踪、决策审批、报告生成"
+  editor:
+    name: "内容编辑"
+    description: "负责内容选题、生产加工、信息录入、质量初筛"
+  reviewer:
+    name: "质量审核"
+    description: "负责内容审核、风险把控、终审放行、反馈优化"
+
+workflow:
+  max_iterations: 10
+  delay_seconds: 1
