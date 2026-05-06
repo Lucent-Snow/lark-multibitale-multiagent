@@ -1,53 +1,17 @@
-# Feishu Base Multi-Agent Network config example.
-# Copy this file to config.yaml and fill in real values.
-# config.yaml is ignored by git because it contains secrets and tenant-specific IDs.
-
-lark:
-  # Base app token, usually starts with "app" or "bas".
-  base_token: "app_or_base_token_here"
-
-  # Table IDs in the target Base. Keep these aligned with the field schema
-  # documented in README.md.
-  tables:
-    tasks: "tbl_tasks_here"
-    contents: "tbl_contents_here"
-    reviews: "tbl_reviews_here"
-    logs: "tbl_logs_here"
-
-    # Optional: required only for agent-team mode.
-    objectives: "tbl_objectives_here"
-    members: "tbl_members_here"
-    messages: "tbl_messages_here"
-    artifacts: "tbl_artifacts_here"
-    verifications: "tbl_verifications_here"
-
-    # Optional: required only for agent-team v2 mode.
-    v2_objectives: "tbl_v2_objectives_here"
-    v2_workers: "tbl_v2_workers_here"
-    v2_tasks: "tbl_v2_tasks_here"
-    v2_task_edges: "tbl_v2_task_edges_here"
-    v2_claims: "tbl_v2_claims_here"
-    v2_messages: "tbl_v2_messages_here"
-    v2_artifacts: "tbl_v2_artifacts_here"
-    v2_verifications: "tbl_v2_verifications_here"
-    v2_events: "tbl_v2_events_here"
+# =============================================================================
+# Feishu Base Multi-Agent Network — Configuration
+# =============================================================================
+# Copy to config.yaml and fill in values.
+# Base token is NOT stored here — pass it via CLI or frontend per project.
+# =============================================================================
 
 llm:
-  # Volcengine ARK API key and endpoint ID.
-  api_key: "ark_api_key_here"
-  endpoint_id: "ep_endpoint_id_here"
+  # Volcengine ARK — https://console.volcengine.com/ark
+  api_key: "ark-xxx"
+  endpoint_id: "ep-xxx"
 
-agents:
-  manager:
-    name: "运营主管"
-    description: "负责任务分配、进度跟踪、决策审批、报告生成"
-  editor:
-    name: "内容编辑"
-    description: "负责内容选题、生产加工、信息录入、质量初筛"
-  reviewer:
-    name: "质量审核"
-    description: "负责内容审核、风险把控、终审放行、反馈优化"
-
-workflow:
-  max_iterations: 10
-  delay_seconds: 1
+bot:
+  # One Feishu Open Platform app (open.feishu.cn)
+  # Required scopes: bitable:app
+  app_id: "cli_xxx"
+  app_secret: "xxx"

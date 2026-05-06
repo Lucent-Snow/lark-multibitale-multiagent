@@ -1271,3 +1271,49 @@
   .main { padding: var(--space-4); }
   .metricsGrid { grid-template-columns: 1fr; }
 }
+
+/* ===== Keyframe Animations ===== */
+@keyframes nodePulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+@keyframes celebrationFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes celebrationScale {
+  from { transform: scale(0.8); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+@keyframes celebrationFall {
+  0% { transform: translateY(0); opacity: 1; }
+  100% { transform: translateY(100vh); opacity: 0; }
+}
+
+@keyframes timelineFadeIn {
+  from { opacity: 0; transform: translateX(-8px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes workerPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(96, 165, 250, 0.4); }
+  50% { box-shadow: 0 0 0 6px rgba(96, 165, 250, 0); }
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* ===== Presentation Mode ===== */
+.presentation .shell {
+  grid-template-columns: 1fr;
+  font-size: 1.15em;
+}
+.presentation .sidebar { display: none; }
+.presentation .panel { display: none; }
+.presentation .metricsGrid { grid-template-columns: repeat(4, 1fr); }
+.presentation .metricsGrid .metric { padding: 20px; }

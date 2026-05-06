@@ -1,14 +1,11 @@
 """
-Feishu Base SDK client using bot credentials (app_access_token).
-
-Each bot has its own app_id + app_secret.
-Token is automatically managed via src.auth.app_auth.get_token().
+Feishu Base SDK client using bot credentials.
+One bot, one base_token — simple.
 """
 
 import re
 import webbrowser
 import warnings
-from dataclasses import dataclass
 
 warnings.filterwarnings("ignore", message="pkg_resources is deprecated")
 
@@ -16,106 +13,11 @@ from lark_oapi.api.bitable.v1 import *
 from lark_oapi import Client
 
 
-@dataclass(frozen=True)
-class BaseTableIds:
-    """Configured Feishu Base table IDs."""
-
-    tasks: str
-    contents: str
-    reviews: str
-    logs: str
-    objectives: str | None = None
-    members: str | None = None
-    messages: str | None = None
-    artifacts: str | None = None
-    verifications: str | None = None
-    v2_objectives: str | None = None
-    v2_workers: str | None = None
-    v2_tasks: str | None = None
-    v2_task_edges: str | None = None
-    v2_claims: str | None = None
-    v2_messages: str | None = None
-    v2_artifacts: str | None = None
-    v2_verifications: str | None = None
-    v2_events: str | None = None
-
-    @classmethod
-    def from_config(cls, config: dict) -> "BaseTableIds":
-        """Build and validate table IDs from config."""
-        required = {
-            "tasks": "task table",
-            "contents": "content table",
-            "reviews": "review table",
-            "logs": "operation log table",
-        }
-        missing = [key for key in required if not config.get(key)]
-        if missing:
-            names = ", ".join(f"{key} ({required[key]})" for key in missing)
-            raise ValueError(f"Missing lark.tables config: {names}")
-        return cls(
-            tasks=config["tasks"],
-            contents=config["contents"],
-            reviews=config["reviews"],
-            logs=config["logs"],
-            objectives=config.get("objectives"),
-            members=config.get("members"),
-            messages=config.get("messages"),
-            artifacts=config.get("artifacts"),
-            verifications=config.get("verifications"),
-            v2_objectives=config.get("v2_objectives"),
-            v2_workers=config.get("v2_workers"),
-            v2_tasks=config.get("v2_tasks"),
-            v2_task_edges=config.get("v2_task_edges"),
-            v2_claims=config.get("v2_claims"),
-            v2_messages=config.get("v2_messages"),
-            v2_artifacts=config.get("v2_artifacts"),
-            v2_verifications=config.get("v2_verifications"),
-            v2_events=config.get("v2_events"),
-        )
-
-    def require_agent_team(self) -> None:
-        """Validate optional agent-team table IDs before using that feature."""
-        required = {
-            "objectives": self.objectives,
-            "members": self.members,
-            "messages": self.messages,
-            "artifacts": self.artifacts,
-            "verifications": self.verifications,
-        }
-        missing = [name for name, value in required.items() if not value]
-        if missing:
-            raise ValueError(
-                "Missing lark.tables config for agent-team mode: "
-                + ", ".join(missing)
-            )
-
-    def require_agent_team_v2(self) -> None:
-        """Validate optional agent-team v2 table IDs before using that feature."""
-        required = {
-            "v2_objectives": self.v2_objectives,
-            "v2_workers": self.v2_workers,
-            "v2_tasks": self.v2_tasks,
-            "v2_task_edges": self.v2_task_edges,
-            "v2_claims": self.v2_claims,
-            "v2_messages": self.v2_messages,
-            "v2_artifacts": self.v2_artifacts,
-            "v2_verifications": self.v2_verifications,
-            "v2_events": self.v2_events,
-        }
-        missing = [name for name, value in required.items() if not value]
-        if missing:
-            raise ValueError(
-                "Missing lark.tables config for agent-team v2 mode: "
-                + ", ".join(missing)
-            )
-
-
 def _handle_api_error(op_name: str, response):
-    """Unpack Feishu API error, detect permission issues, offer browser auth."""
+    """Unpack Feishu API error, detect permission issues."""
     code = getattr(response, "code", -1)
     msg = getattr(response, "msg", str(response))
 
-    # Permission / scope error — extract the auth URL
     auth_url = None
     url_match = re.search(
         r"https://open\.feishu\.cn/app/[a-z0-9_]+/auth\?[^\s]+", msg
@@ -130,11 +32,11 @@ def _handle_api_error(op_name: str, response):
         except Exception:
             pass
 
-    # Forbidden on a specific resource (table / base access)
     if code == 17910003 or "Forbidden" in str(msg):
         hint = (
-            f"\n  [HINT] The bot can authenticate but cannot access this Base.\n"
-            f"  [HINT] Open the Base in Feishu → Share → add this bot's app_id as Editor."
+            f"\n  [HINT] The bot cannot access this Base.\n"
+            f"  [HINT] Open the Base in Feishu → Share → add the bot as Editor.\n"
+            f"  [HINT] If the Base is in your personal space, move it to a shared space first."
         )
         raise Exception(f"{op_name} failed: {msg}{hint}")
 
@@ -142,40 +44,59 @@ def _handle_api_error(op_name: str, response):
 
 
 class BaseClient:
-    """Feishu Base client using bot authentication."""
+    """Feishu Base client — one bot, one base."""
 
-    def __init__(self, bot_name: str, base_token: str, table_ids: BaseTableIds):
-        from src.auth.app_auth import Credentials
+    def __init__(self, base_token: str):
+        import yaml
+        import os
+        import json
 
         self.base_token = base_token
-        self.table_ids = table_ids
-        self._bot_name = bot_name
 
-        creds = Credentials()
-        bot = creds.get(bot_name)
-        if not bot:
-            raise ValueError(f"Bot '{bot_name}' not found in credentials")
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        config_path = os.path.join(root, "config.yaml")
+        with open(config_path, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f.read()) or {}
+
+        bot = (cfg.get("bot") or {})
+        app_id = bot.get("app_id", "")
+        app_secret = bot.get("app_secret", "")
+        if not app_id or not app_secret:
+            raise ValueError("Missing bot.app_id or bot.app_secret in config.yaml")
+
+        # Ensure credentials are saved for auth module
+        creds_path = os.path.join(root, ".credentials.json")
+        existing = {}
+        if os.path.exists(creds_path):
+            try:
+                with open(creds_path, "r", encoding="utf-8") as f:
+                    existing = json.loads(f.read()) or {}
+            except Exception:
+                pass
+        bots = existing.get("bots", [])
+        if not any(b.get("app_id") == app_id for b in bots):
+            bots.append({"name": "bot", "app_id": app_id, "app_secret": app_secret})
+            existing["bots"] = bots
+            with open(creds_path, "w", encoding="utf-8") as f:
+                json.dump(existing, f, ensure_ascii=False, indent=2)
+
+        self._bot_name = "bot"
 
         self._client = Client.builder() \
-            .app_id(bot.app_id) \
-            .app_secret(bot.app_secret) \
+            .app_id(app_id) \
+            .app_secret(app_secret) \
             .enable_set_token(True) \
             .build()
 
     def _opt(self):
-        """Build request option with current app_access_token."""
         from src.auth.app_auth import get_token
         from lark_oapi.core.token import RequestOptionBuilder
         return RequestOptionBuilder().app_access_token(get_token(self._bot_name)).build()
 
-    def update_token(self, new_token: str):
-        """Update the cached token (called after refresh)."""
-        pass  # Not needed for bot token, SDK handles it internally
-
-    # ─── generic table helpers ─────────────────────────────
+    # ─── Generic CRUD ──────────────────────────────────────
 
     def create_table(self, name: str, fields: list[str]) -> str:
-        """Create a Base table with text fields and return the table ID."""
+        """Create a table and return its ID."""
         headers = [
             AppTableCreateHeader.builder()
             .field_name(field_name)
@@ -199,7 +120,6 @@ class BaseClient:
         return response.data.table_id
 
     def create_record(self, table_id: str, fields: dict) -> str:
-        """Create a record in any configured Base table."""
         request = CreateAppTableRecordRequest.builder() \
             .app_token(self.base_token) \
             .table_id(table_id) \
@@ -211,7 +131,6 @@ class BaseClient:
         return response.data.record.record_id
 
     def list_records(self, table_id: str) -> list:
-        """List records from any configured Base table."""
         items = []
         page_token = None
         while True:
@@ -222,9 +141,7 @@ class BaseClient:
             if page_token:
                 builder = builder.page_token(page_token)
             request = builder.build()
-            response = self._client.bitable.v1.app_table_record.list(
-                request, self._opt()
-            )
+            response = self._client.bitable.v1.app_table_record.list(request, self._opt())
             if not response.success():
                 _handle_api_error("list_records", response)
             data = response.data
@@ -236,7 +153,6 @@ class BaseClient:
                 return items
 
     def update_record(self, table_id: str, record_id: str, fields: dict) -> bool:
-        """Update a record in any configured Base table."""
         request = UpdateAppTableRecordRequest.builder() \
             .app_token(self.base_token) \
             .table_id(table_id) \
@@ -249,7 +165,6 @@ class BaseClient:
         return True
 
     def get_record(self, table_id: str, record_id: str):
-        """Get a record from any configured Base table."""
         request = GetAppTableRecordRequest.builder() \
             .app_token(self.base_token) \
             .table_id(table_id) \
@@ -259,60 +174,3 @@ class BaseClient:
         if not response.success():
             _handle_api_error("get_record", response)
         return response.data.record
-
-    # ─── task table ─────────────────────────────────────────
-
-    def create_task(self, fields: dict) -> str:
-        if "状态" not in fields:
-            fields["状态"] = "待处理"
-        return self.create_record(self.table_ids.tasks, fields)
-
-    def list_tasks(self) -> list:
-        return self.list_records(self.table_ids.tasks)
-
-    def update_task_status(self, record_id: str, new_status: str) -> bool:
-        return self.update_record(self.table_ids.tasks, record_id, {"状态": new_status})
-
-    def get_task(self, record_id: str) -> dict:
-        return self.get_record(self.table_ids.tasks, record_id)
-
-    # ─── content table ──────────────────────────────────────
-
-    def create_content(self, fields: dict) -> str:
-        return self.create_record(self.table_ids.contents, fields)
-
-    def list_contents(self) -> list:
-        return self.list_records(self.table_ids.contents)
-
-    def get_content(self, record_id: str) -> dict:
-        return self.get_record(self.table_ids.contents, record_id)
-
-    def update_content_status(self, record_id: str, new_status: str) -> bool:
-        return self.update_record(self.table_ids.contents, record_id, {"状态": new_status})
-
-    # ─── review table ───────────────────────────────────────
-
-    def create_review_task(self, fields: dict) -> str:
-        return self.create_record(self.table_ids.reviews, fields)
-
-    def list_pending_reviews(self) -> list:
-        return self.list_records(self.table_ids.reviews)
-
-    def update_review_status(self, record_id: str, status: str,
-                             opinion: str = "") -> bool:
-        fields = {"审核状态": status}
-        if opinion:
-            fields["审核意见"] = opinion
-        return self.update_record(self.table_ids.reviews, record_id, fields)
-
-    # ─── log table ─────────────────────────────────────────
-
-    def log_operation(self, operator: str, op_type: str, record_id: str,
-                      detail: str) -> str:
-        fields = {
-            "操作者": operator,
-            "操作类型": op_type,
-            "关联记录ID": record_id,
-            "变更内容": detail,
-        }
-        return self.create_record(self.table_ids.logs, fields)

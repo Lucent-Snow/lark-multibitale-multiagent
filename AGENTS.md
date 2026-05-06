@@ -16,7 +16,7 @@
 - `src/llm/`: ARK LLM 客户端
 - `src/agents/`: Manager、Editor、Reviewer 三个业务 Agent
 - `src/workflow/`: 选题、生产、审核、发布、归档、报告的流程编排
-- `src/agent_team/`: agent-team lite 的任务市场、Leader 拆解和 Base 存储边界
+- `src/agent_team/`: Agent-Team 控制平面（Leader 拆解、Worker 认领仲裁、租约过期、验证门、重试）
 - `tests/`: 不依赖真实飞书/ARK 的自动化测试
 - `docs/`: 架构、流程和关键设计说明
 
@@ -27,7 +27,7 @@ pip install -r requirements.txt
 python -m unittest discover -s tests
 python -m compileall -q src tests
 python src/main.py --help
-python src/main.py --agent-team-demo
+python src/main.py --agent-team-memory-demo
 ```
 
 ## 配置和敏感文件
@@ -51,5 +51,5 @@ python src/main.py --agent-team-demo
 - 普通改动至少运行 `python -m unittest discover -s tests`。
 - 语法和导入检查运行 `python -m compileall -q src tests`。
 - CLI 参数检查运行 `python src/main.py --help`。
-- Agent-team 离线演示运行 `python src/main.py --agent-team-demo`。
+- Agent-team 离线演示运行 `python src/main.py --agent-team-memory-demo`。
 - 端到端演示才运行 `python src/main.py`，它会真实调用 ARK 和飞书 Base，并写入记录。

@@ -1,79 +1,78 @@
-"""In-memory agent-team store for offline demos and tests."""
+"""In-memory store for protocol tests and offline demos."""
 
-from dataclasses import replace
+import copy
+import threading
+from datetime import datetime, timezone
 
-from src.agent_team.contracts import AgentTeamTask, AgentTeamStore, TaskSpec
+from src.agent_team.contracts import TASK_PENDING, Task, TaskPlan, ObjectiveStore
 
 
-class InMemoryAgentTeamStore(AgentTeamStore):
-    """Volatile store implementing the same boundary as the Base-backed store."""
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+class InMemoryObjectiveStore:
+    """Thread-safe in-memory store — one objective, one table."""
 
     def __init__(self):
-        self.tasks: list[AgentTeamTask] = []
-        self.artifacts: dict[str, dict] = {}
-        self.messages: dict[str, dict] = {}
-        self.logs: list[dict] = []
+        self._lock = threading.RLock()
+        self.objective_title = ""
+        self.objective_description = ""
+        self.objective_status = "in_progress"
+        self.tasks: dict[str, Task] = {}
+        self._counter = 0
 
-    def create_task(self, spec: TaskSpec) -> AgentTeamTask:
-        task = AgentTeamTask(
-            task_id=f"task-{len(self.tasks) + 1}",
-            subject=spec.subject,
-            description=spec.description,
-            role=spec.role,
-            blocked_by=spec.blocked_by,
-            metadata=spec.metadata,
-        )
-        self.tasks.append(task)
-        return task
+    def _id(self) -> str:
+        self._counter += 1
+        return f"task-{self._counter}"
 
-    def list_tasks(self) -> list[AgentTeamTask]:
-        return list(self.tasks)
+    def create_objective(self, title: str, description: str) -> str:
+        with self._lock:
+            self.objective_title = title
+            self.objective_description = description
+            self.objective_status = "in_progress"
+            return "obj-memory"
 
-    def update_task(self, task_id: str, fields: dict) -> AgentTeamTask:
-        for index, task in enumerate(self.tasks):
-            if task.task_id != task_id:
-                continue
-            updated = replace(
-                task,
+    def add_task(self, plan: TaskPlan) -> Task:
+        with self._lock:
+            tid = self._id()
+            task = Task(
+                task_id=tid,
+                objective_id="obj-memory",
+                subject=plan.subject,
+                description=plan.description,
+                role=plan.role,
+                depends_on=",".join(plan.blocked_by_subjects),
+            )
+            self.tasks[tid] = task
+            return task
+
+    def list_tasks(self) -> list[Task]:
+        with self._lock:
+            return list(self.tasks.values())
+
+    def get_task(self, task_id: str) -> Task:
+        with self._lock:
+            return self.tasks[task_id]
+
+    def update_task(self, task_id: str, fields: dict) -> Task:
+        with self._lock:
+            task = self.tasks[task_id]
+            updated = Task(
+                task_id=task.task_id,
+                objective_id=task.objective_id,
+                subject=fields.get("subject", task.subject),
+                description=fields.get("description", task.description),
+                role=fields.get("role", task.role),
                 status=fields.get("status", task.status),
                 owner=fields.get("owner", task.owner),
-                metadata=fields.get("metadata", task.metadata),
+                attempt_count=int(fields.get("attempt_count", task.attempt_count)),
+                depends_on=fields.get("depends_on", task.depends_on),
+                artifact=fields.get("artifact", task.artifact),
+                artifact_title=fields.get("artifact_title", task.artifact_title),
+                verdict=fields.get("verdict", task.verdict),
+                issues=fields.get("issues", task.issues),
+                created_at=fields.get("created_at", task.created_at),
             )
-            self.tasks[index] = updated
+            self.tasks[task_id] = updated
             return updated
-        raise KeyError(task_id)
-
-    def create_artifact(self, task_id: str, title: str, content: str,
-                        author: str) -> str:
-        artifact_id = f"artifact-{len(self.artifacts) + 1}"
-        self.artifacts[artifact_id] = {
-            "task_id": task_id,
-            "title": title,
-            "content": content,
-            "author": author,
-        }
-        return artifact_id
-
-    def create_message(self, sender: str, recipient: str, summary: str,
-                       message: str, task_id: str = "") -> str:
-        message_id = f"message-{len(self.messages) + 1}"
-        self.messages[message_id] = {
-            "sender": sender,
-            "recipient": recipient,
-            "summary": summary,
-            "message": message,
-            "task_id": task_id,
-        }
-        return message_id
-
-    def log_operation(self, operator: str, op_type: str, target_id: str,
-                      detail: str) -> str:
-        log_id = f"log-{len(self.logs) + 1}"
-        self.logs.append({
-            "log_id": log_id,
-            "operator": operator,
-            "op_type": op_type,
-            "target_id": target_id,
-            "detail": detail,
-        })
-        return log_id

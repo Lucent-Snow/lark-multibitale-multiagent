@@ -156,7 +156,7 @@ lark-multibitale-multiagent/
 │   │   ├── manager.py       # 运营主管 Agent — 任务分配、审批、报告
 │   │   ├── editor.py        # 内容编辑 Agent — LLM 生成文章
 │   │   └── reviewer.py      # 质量审核 Agent — LLM 审核决策
-│   ├── agent_team/          # Agent-team lite：目标拆解、任务市场、Base 存储边界
+│   ├── agent_team/          # Agent-Team 控制平面（Leader拆解、Worker认领仲裁、验证门）
 │   ├── base_client/         # 飞书多维表格交互
 │   │   ├── __init__.py
 │   │   └── client.py        # SDK 封装 + 权限错误自动检测与修复指引
@@ -195,8 +195,11 @@ Bot Credentials → app_access_token → lark-oapi SDK → Base API
 ### 前置条件
 
 - Python 3.10+
+- Node.js 18+（前端）
 - 飞书企业账号 + 开放平台应用
 - 国内大模型 API 访问权限
+
+> **新人部署？** 见 [SETUP.md](./SETUP.md) —— 20 分钟完整部署指南 + 常见问题。
 
 ### 安装部署
 
@@ -207,44 +210,37 @@ cd lark-multibitale-multiagent
 
 # 安装依赖
 pip install -r requirements.txt
+cd frontend && npm install && cd ..
 
 # 配置
 cp config.yaml.example config.yaml
-# 编辑 config.yaml 填入 Base token、4 个表 ID、ARK API key + endpoint_id
-```
+# 编辑 config.yaml 填入 Base token、表 ID、bot 凭据、ARK API key
 
-`config.yaml` 必须包含：
-
-```yaml
-lark:
-  base_token: "app_or_base_token_here"
-  tables:
-    tasks: "tbl_tasks_here"
-    contents: "tbl_contents_here"
-    reviews: "tbl_reviews_here"
-    logs: "tbl_logs_here"
-llm:
-  api_key: "ark_api_key_here"
-  endpoint_id: "ep_endpoint_id_here"
+# 验证配置
+python scripts/setup_check.py
 ```
 
 ### 运行系统
 
 ```bash
-# 首次：注册 3 个 bot 应用（每次会打开浏览器，点"通过"即可）
+# 首次：注册 3 个 bot 应用（每次会打开浏览器授权）
 python src/main.py --register manager
 python src/main.py --register editor
 python src/main.py --register reviewer
 
-# 演示：编辑 demo.yaml 定制演示场景，然后直接运行
-python src/main.py
+# 创建 Agent-Team 控制平面表
+python src/main.py --agent-team-setup
+# 把打印的 9 个 table ID 填入 config.yaml
 
-# 或者 CLI 快速覆盖
-python src/main.py --topic "突发新闻" --content-title "深度分析" --category "时政"
+# 内存协议演示（不需要 Base/LLM，总能跑）
+python src/main.py --agent-team-memory-demo
 
-# 离线 Agent-team 演示：不调用飞书或 ARK
-python src/main.py --agent-team-demo
-```
+# 真实 Base 多进程演示
+python src/main.py --agent-team-base-demo --workers 3 --agent-team-max-tasks 4
+
+# 启动前端指挥中心
+cd frontend && npm run dev
+# 浏览器打开 http://localhost:3000
 
 ### 自动化验证
 

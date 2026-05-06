@@ -1,4 +1,4 @@
-"""Shared contracts for the Base-backed agent-team mode."""
+"""Contracts for the agent-team protocol."""
 
 from dataclasses import dataclass, field
 from typing import Protocol
@@ -6,65 +6,69 @@ from typing import Protocol
 
 TASK_PENDING = "pending"
 TASK_IN_PROGRESS = "in_progress"
-TASK_BLOCKED = "blocked"
 TASK_COMPLETED = "completed"
 TASK_FAILED = "failed"
 
-TERMINAL_TASK_STATUSES = {TASK_COMPLETED, TASK_FAILED}
+VERIFICATION_PASS = "PASS"
+VERIFICATION_FAIL = "FAIL"
+
+DEFAULT_MAX_ATTEMPTS = 3
 
 
 @dataclass(frozen=True)
-class TaskSpec:
-    """Leader-produced task specification for a worker agent."""
+class WorkerSpec:
+    """Leader-produced worker specification with custom prompt."""
+
+    worker_id: str
+    name: str
+    role: str
+    prompt: str = ""
+
+
+@dataclass(frozen=True)
+class TaskPlan:
+    """Leader-produced task plan before it is persisted."""
 
     subject: str
     description: str
     role: str
-    blocked_by: list[str] = field(default_factory=list)
-    metadata: dict = field(default_factory=dict)
+    blocked_by_subjects: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
-class AgentTeamTask:
-    """Stored task state used by the agent-team engine."""
+class Task:
+    """A task record — one row in the objective's table."""
 
     task_id: str
+    objective_id: str
     subject: str
     description: str
     role: str
     status: str = TASK_PENDING
     owner: str = ""
-    blocked_by: list[str] = field(default_factory=list)
-    metadata: dict = field(default_factory=dict)
+    attempt_count: int = 0
+    depends_on: str = ""          # comma-separated task subjects
+    artifact: str = ""             # worker output content
+    artifact_title: str = ""       # short title for the artifact
+    verdict: str = ""              # PASS or FAIL
+    issues: str = ""               # verification issues found
+    created_at: str = ""
 
-    @property
-    def is_terminal(self) -> bool:
-        return self.status in TERMINAL_TASK_STATUSES
 
+class ObjectiveStore(Protocol):
+    """Persistence for ONE objective. One table, all in one place."""
 
-class AgentTeamStore(Protocol):
-    """Persistence boundary for agent-team state.
-
-    Implementations can be in-memory for tests or backed by Feishu Base.
-    """
-
-    def create_task(self, spec: TaskSpec) -> AgentTeamTask:
+    def create_objective(self, title: str, description: str) -> str:
         ...
 
-    def list_tasks(self) -> list[AgentTeamTask]:
+    def add_task(self, plan: TaskPlan) -> Task:
         ...
 
-    def update_task(self, task_id: str, fields: dict) -> AgentTeamTask:
+    def list_tasks(self) -> list[Task]:
         ...
 
-    def create_artifact(self, task_id: str, title: str, content: str,
-                        author: str) -> str:
+    def get_task(self, task_id: str) -> Task:
         ...
 
-    def create_message(self, sender: str, recipient: str, summary: str,
-                       message: str, task_id: str = "") -> str:
-        ...
-
-    def log_operation(self, operator: str, op_type: str, target_id: str,
-                      detail: str) -> str:
+    def update_task(self, task_id: str, fields: dict) -> Task:
         ...

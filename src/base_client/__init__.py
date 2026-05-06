@@ -1,1 +1,1 @@
-from src.base_client.client import BaseClient, BaseTableIds
+from src.base_client.client import BaseClient

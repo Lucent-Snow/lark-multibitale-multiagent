@@ -1,154 +1,152 @@
-"""Feishu Base implementation of the agent-team store."""
+"""Feishu Base store — one table per objective, all data in one place."""
 
 import json
+from datetime import datetime, timezone
 
-from src.agent_team.contracts import (
-    AgentTeamTask,
-    TASK_PENDING,
-    TaskSpec,
-)
+from src.agent_team.contracts import TASK_PENDING, Task, TaskPlan, ObjectiveStore
 from src.base_client.client import BaseClient
 
+FIELDS = [
+    "task_id", "objective_id", "subject", "description", "role",
+    "status", "owner", "attempt_count", "depends_on",
+    "artifact", "artifact_title", "verdict", "issues", "created_at",
+]
 
-class BaseAgentTeamStore:
-    """Persist agent-team task-market state in Feishu Base."""
 
-    def __init__(self, base_client: BaseClient,
-                 task_scope: dict | None = None):
-        base_client.table_ids.require_agent_team()
-        self.base = base_client
-        self.task_scope = task_scope or {}
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
-    def _table(self, name: str) -> str:
-        table_id = getattr(self.base.table_ids, name)
-        if not table_id:
-            raise ValueError(f"Agent-team table is not configured: {name}")
-        return table_id
 
-    @staticmethod
-    def _scalar(value, default: str = "") -> str:
-        """Normalize Base cell values that may arrive as scalar or single-item list."""
-        if isinstance(value, list):
-            if not value:
-                return default
-            return "".join(BaseAgentTeamStore._scalar(item, "") for item in value)
-        if isinstance(value, dict):
-            if "text" in value:
-                return str(value["text"])
-            if "name" in value:
-                return str(value["name"])
-            return str(value)
-        if value is None:
+def _scalar(value, default: str = "") -> str:
+    if isinstance(value, list):
+        if not value:
             return default
+        return "".join(_scalar(item, "") for item in value)
+    if isinstance(value, dict):
+        if "text" in value:
+            return str(value["text"])
         return str(value)
+    if value is None:
+        return default
+    return str(value)
 
-    @staticmethod
-    def _task_from_record(record) -> AgentTeamTask:
-        fields = record.fields or {}
-        blocked_by_raw = BaseAgentTeamStore._scalar(fields.get("阻塞依赖"), "[]")
-        metadata_raw = BaseAgentTeamStore._scalar(fields.get("元数据"), "{}")
-        try:
-            blocked_by = json.loads(blocked_by_raw)
-        except (TypeError, json.JSONDecodeError):
-            blocked_by = []
-        try:
-            metadata = json.loads(metadata_raw)
-        except (TypeError, json.JSONDecodeError):
-            metadata = {}
-        if not isinstance(blocked_by, list):
-            blocked_by = []
-        if not isinstance(metadata, dict):
-            metadata = {}
-        return AgentTeamTask(
-            task_id=record.record_id,
-            subject=BaseAgentTeamStore._scalar(fields.get("任务标题")),
-            description=BaseAgentTeamStore._scalar(fields.get("任务说明")),
-            role=BaseAgentTeamStore._scalar(fields.get("角色")),
-            status=BaseAgentTeamStore._scalar(fields.get("状态"), TASK_PENDING),
-            owner=BaseAgentTeamStore._scalar(fields.get("负责人")),
-            blocked_by=[str(value) for value in blocked_by],
-            metadata=metadata,
-        )
 
-    def create_task(self, spec: TaskSpec) -> AgentTeamTask:
-        metadata = {**spec.metadata, **self.task_scope}
-        record_id = self.base.create_record(self._table("tasks"), {
-            "任务标题": spec.subject,
-            "任务说明": spec.description,
-            "角色": spec.role,
-            "状态": TASK_PENDING,
-            "负责人": "",
-            "阻塞依赖": json.dumps(spec.blocked_by, ensure_ascii=False),
-            "元数据": json.dumps(metadata, ensure_ascii=False),
+class BaseObjectiveStore:
+    """One Base table per objective — tasks, artifacts, verifications all in one."""
+
+    def __init__(self, base_client: BaseClient, objective_id: str):
+        self.base = base_client
+        self.objective_id = objective_id
+        self.table_name = f"obj_{objective_id}"
+        self.table_id = self._resolve_table()
+
+    def _resolve_table(self) -> str:
+        # Try to find existing table by name
+        existing = self._find_table(self.table_name)
+        if existing:
+            return existing
+        # Create new table
+        return self.base.create_table(self.table_name, FIELDS)
+
+    def _find_table(self, name: str) -> str | None:
+        from lark_oapi.api.bitable.v1 import ListAppTableRequest
+        request = ListAppTableRequest.builder() \
+            .app_token(self.base.base_token).page_size(100).build()
+        response = self.base._client.bitable.v1.app_table.list(request, self.base._opt())
+        if response.success():
+            for item in (response.data.items or []):
+                if item.name == name:
+                    return item.table_id
+        return None
+
+    def create_objective(self, title: str, description: str) -> str:
+        # The table creation IS the objective creation. title/desc are implicit.
+        return self.objective_id
+
+    def add_task(self, plan: TaskPlan) -> Task:
+        record_id = self.base.create_record(self.table_id, {
+            "task_id": "",
+            "objective_id": self.objective_id,
+            "subject": plan.subject,
+            "description": plan.description,
+            "role": plan.role,
+            "status": TASK_PENDING,
+            "owner": "",
+            "attempt_count": "0",
+            "depends_on": ",".join(plan.blocked_by_subjects),
+            "artifact": "",
+            "artifact_title": "",
+            "verdict": "",
+            "issues": "",
+            "created_at": _now(),
         })
-        return AgentTeamTask(
+        self.base.update_record(self.table_id, record_id, {"task_id": record_id})
+        return Task(
             task_id=record_id,
-            subject=spec.subject,
-            description=spec.description,
-            role=spec.role,
-            blocked_by=spec.blocked_by,
-            metadata=metadata,
+            objective_id=self.objective_id,
+            subject=plan.subject,
+            description=plan.description,
+            role=plan.role,
+            depends_on=",".join(plan.blocked_by_subjects),
         )
 
-    def list_tasks(self) -> list[AgentTeamTask]:
-        tasks = [
-            self._task_from_record(record)
-            for record in self.base.list_records(self._table("tasks"))
-        ]
-        if not self.task_scope:
-            return tasks
-        return [
-            task for task in tasks
-            if all(task.metadata.get(key) == value
-                   for key, value in self.task_scope.items())
-        ]
+    def list_tasks(self) -> list[Task]:
+        tasks = []
+        for record in self.base.list_records(self.table_id):
+            f = record.fields or {}
+            tasks.append(Task(
+                task_id=_scalar(f.get("task_id"), record.record_id),
+                objective_id=_scalar(f.get("objective_id")),
+                subject=_scalar(f.get("subject")),
+                description=_scalar(f.get("description")),
+                role=_scalar(f.get("role")),
+                status=_scalar(f.get("status"), TASK_PENDING),
+                owner=_scalar(f.get("owner")),
+                attempt_count=int(_scalar(f.get("attempt_count"), "0") or 0),
+                depends_on=_scalar(f.get("depends_on")),
+                artifact=_scalar(f.get("artifact")),
+                artifact_title=_scalar(f.get("artifact_title")),
+                verdict=_scalar(f.get("verdict")),
+                issues=_scalar(f.get("issues")),
+                created_at=_scalar(f.get("created_at")),
+            ))
+        return tasks
 
-    def _get_scoped_task(self, task_id: str) -> AgentTeamTask:
-        task = self._task_from_record(self.base.get_record(self._table("tasks"), task_id))
-        if self.task_scope and not all(
-            task.metadata.get(key) == value
-            for key, value in self.task_scope.items()
-        ):
-            raise ValueError(f"Task is outside the current agent-team scope: {task_id}")
-        return task
+    def get_task(self, task_id: str) -> Task:
+        record = self.base.get_record(self.table_id, task_id)
+        f = record.fields or {}
+        return Task(
+            task_id=_scalar(f.get("task_id"), record.record_id),
+            objective_id=_scalar(f.get("objective_id")),
+            subject=_scalar(f.get("subject")),
+            description=_scalar(f.get("description")),
+            role=_scalar(f.get("role")),
+            status=_scalar(f.get("status"), TASK_PENDING),
+            owner=_scalar(f.get("owner")),
+            attempt_count=int(_scalar(f.get("attempt_count"), "0") or 0),
+            depends_on=_scalar(f.get("depends_on")),
+            artifact=_scalar(f.get("artifact")),
+            artifact_title=_scalar(f.get("artifact_title")),
+            verdict=_scalar(f.get("verdict")),
+            issues=_scalar(f.get("issues")),
+            created_at=_scalar(f.get("created_at")),
+        )
 
-    def update_task(self, task_id: str, fields: dict) -> AgentTeamTask:
-        self._get_scoped_task(task_id)
+    def update_task(self, task_id: str, fields: dict) -> Task:
         base_fields = {}
-        if "status" in fields:
-            base_fields["状态"] = fields["status"]
-        if "owner" in fields:
-            base_fields["负责人"] = fields["owner"]
-        if "metadata" in fields:
-            metadata = {**fields["metadata"], **self.task_scope}
-            base_fields["元数据"] = json.dumps(metadata, ensure_ascii=False)
+        mapping = {
+            "subject": "subject", "description": "description", "role": "role",
+            "status": "status", "owner": "owner",
+            "attempt_count": "attempt_count", "depends_on": "depends_on",
+            "artifact": "artifact", "artifact_title": "artifact_title",
+            "verdict": "verdict", "issues": "issues",
+        }
+        for key, field_name in mapping.items():
+            if key in fields:
+                val = fields[key]
+                if isinstance(val, int):
+                    val = str(val)
+                base_fields[field_name] = val
         if base_fields:
-            self.base.update_record(self._table("tasks"), task_id, base_fields)
-        return self._task_from_record(self.base.get_record(self._table("tasks"), task_id))
-
-    def create_artifact(self, task_id: str, title: str, content: str,
-                        author: str) -> str:
-        self._get_scoped_task(task_id)
-        return self.base.create_record(self._table("artifacts"), {
-            "关联任务ID": task_id,
-            "产物标题": title,
-            "产物内容": content,
-            "作者": author,
-        })
-
-    def create_message(self, sender: str, recipient: str, summary: str,
-                       message: str, task_id: str = "") -> str:
-        if task_id:
-            self._get_scoped_task(task_id)
-        return self.base.create_record(self._table("messages"), {
-            "发送者": sender,
-            "接收者": recipient,
-            "摘要": summary,
-            "消息内容": message,
-            "关联任务ID": task_id,
-            "状态": "unread",
-        })
-
-    def log_operation(self, operator: str, op_type: str, target_id: str,
-                      detail: str) -> str:
-        return self.base.log_operation(operator, op_type, target_id, detail)
+            self.base.update_record(self.table_id, task_id, base_fields)
+        return self.get_task(task_id)

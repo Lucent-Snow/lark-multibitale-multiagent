@@ -1,9 +1,21 @@
-"""Base table schema definitions for agent-team v2."""
+"""Base table schema definitions for the agent-team control plane.
+
+Each Base gets a lightweight meta table that stores the table IDs
+of the 9 data tables. Leader creates everything on first run.
+"""
+
+# Physical table name prefix (configurable, not v2_ anymore)
+TABLE_PREFIX = "agent_team_"
 
 
-V2_TABLE_SCHEMAS = {
-    "v2_objectives": {
-        "name": "v2_objectives",
+META_TABLE = {
+    "name": f"{TABLE_PREFIX}meta",
+    "fields": ["key", "table_id"],
+}
+
+DATA_TABLES = {
+    "objectives": {
+        "name": f"{TABLE_PREFIX}objectives",
         "fields": [
             "objective_id",
             "标题",
@@ -14,8 +26,8 @@ V2_TABLE_SCHEMAS = {
             "创建时间",
         ],
     },
-    "v2_workers": {
-        "name": "v2_workers",
+    "workers": {
+        "name": f"{TABLE_PREFIX}workers",
         "fields": [
             "worker_id",
             "objective_id",
@@ -28,8 +40,8 @@ V2_TABLE_SCHEMAS = {
             "进程ID",
         ],
     },
-    "v2_tasks": {
-        "name": "v2_tasks",
+    "tasks": {
+        "name": f"{TABLE_PREFIX}tasks",
         "fields": [
             "task_id",
             "objective_id",
@@ -44,8 +56,8 @@ V2_TABLE_SCHEMAS = {
             "完成时间",
         ],
     },
-    "v2_task_edges": {
-        "name": "v2_task_edges",
+    "task_edges": {
+        "name": f"{TABLE_PREFIX}task_edges",
         "fields": [
             "objective_id",
             "from_task_id",
@@ -53,8 +65,8 @@ V2_TABLE_SCHEMAS = {
             "关系类型",
         ],
     },
-    "v2_claims": {
-        "name": "v2_claims",
+    "claims": {
+        "name": f"{TABLE_PREFIX}claims",
         "fields": [
             "claim_id",
             "objective_id",
@@ -65,8 +77,8 @@ V2_TABLE_SCHEMAS = {
             "创建时间",
         ],
     },
-    "v2_messages": {
-        "name": "v2_messages",
+    "messages": {
+        "name": f"{TABLE_PREFIX}messages",
         "fields": [
             "message_id",
             "objective_id",
@@ -79,8 +91,8 @@ V2_TABLE_SCHEMAS = {
             "创建时间",
         ],
     },
-    "v2_artifacts": {
-        "name": "v2_artifacts",
+    "artifacts": {
+        "name": f"{TABLE_PREFIX}artifacts",
         "fields": [
             "artifact_id",
             "objective_id",
@@ -91,8 +103,8 @@ V2_TABLE_SCHEMAS = {
             "创建时间",
         ],
     },
-    "v2_verifications": {
-        "name": "v2_verifications",
+    "verifications": {
+        "name": f"{TABLE_PREFIX}verifications",
         "fields": [
             "verification_id",
             "objective_id",
@@ -104,8 +116,8 @@ V2_TABLE_SCHEMAS = {
             "创建时间",
         ],
     },
-    "v2_events": {
-        "name": "v2_events",
+    "events": {
+        "name": f"{TABLE_PREFIX}events",
         "fields": [
             "event_id",
             "objective_id",
@@ -118,3 +130,5 @@ V2_TABLE_SCHEMAS = {
     },
 }
 
+# Combined: meta + 9 data tables
+ALL_TABLES = {"meta": META_TABLE, **DATA_TABLES}

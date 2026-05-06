@@ -10,6 +10,10 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import styles from "./page.module.css";
 import { SCENARIOS, Scenario } from "./scenarios";
+import ProgressHeader from "./components/ProgressHeader";
+import TaskFlowDiagram from "./components/TaskFlowDiagram";
+import CelebrationOverlay from "./components/CelebrationOverlay";
+import ActivityTimeline from "./components/ActivityTimeline";
 
 /* ===== Types ===== */
 type ApiError = {
@@ -51,6 +55,9 @@ type Verification = Record<string, unknown>;
 type Snapshot = {
   mode: "real"; empty: boolean;
   base: { token_suffix: string };
+  table_count?: number;
+  tables?: { name: string; table_id: string }[];
+  has_agent_team?: boolean;
   objective: Objective | null;
   workers: Worker[]; tasks: Task[]; edges: Edge[];
   claims: Record<string, unknown>[];
@@ -122,8 +129,19 @@ function formatEventNarrative(eventType: string, actor: string, detail: string):
   }
 }
 
+/** Parse base_token from Feishu Base URL */
+function parseBaseUrl(url: string): string | null {
+  const m = url.match(/\/base\/([a-zA-Z0-9]+)/);
+  return m ? m[1] : null;
+}
+
 /* ===== Main Page ===== */
 export default function Home() {
+  const [baseToken, setBaseToken] = useState(() =>
+    (typeof window !== "undefined" && window.sessionStorage.getItem("agent-team-base-token")) || "");
+  const [mounted, setMounted] = useState(false);
+  const [urlInput, setUrlInput] = useState("");
+
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
   const [loading, setLoading] = useState(true);
@@ -144,8 +162,56 @@ export default function Home() {
   const [operationToken, setOperationToken] = useState("");
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [tutorialOpen, setTutorialOpen] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [objectiveStartedAt, setObjectiveStartedAt] = useState<string | null>(null);
+  const [completedAt, setCompletedAt] = useState<string | null>(null);
+  const [showCelebration, setShowCelebration] = useState(false);
+  const prevCompleted = useRef(false);
   const loadingRef = useRef(false);
   const snapshotRef = useRef<Snapshot | null>(null);
+
+  const saveBaseToken = (token: string) => {
+    setBaseToken(token);
+    if (typeof window !== "undefined") window.sessionStorage.setItem("agent-team-base-token", token);
+  };
+
+  const disconnectProject = () => {
+    saveBaseToken("");
+    setSnapshot(null);
+    setError(null);
+    flash("已断开项目连接");
+  };
+
+  const connectProject = (url: string) => {
+    const token = parseBaseUrl(url);
+    if (!token) { flash("无法解析 Base URL，格式应为 https://xxx.feishu.cn/base/TOKEN", false); return; }
+    saveBaseToken(token);
+    setUrlInput("");
+    flash(`已连接 Base ...${token.slice(-6)}`, true);
+    setTimeout(() => loadSnapshot(), 500);
+  };
+
+  const doInspect = async () => {
+    if (!baseToken) return;
+    // snapshot now includes table metadata, just refresh
+    loadSnapshot();
+  };
+
+  const doInit = async () => {
+    if (!baseToken) return;
+    setBusyAction("init");
+    try {
+      const res = await fetch(`/api/agent-team/init`, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...(operationToken ? { "x-agent-team-token": operationToken } : {}) },
+        body: JSON.stringify({}),
+      });
+      const d = await res.json();
+      if (d.ok) { flash(`Leader 已创建 ${d.data.table_count} 张表`, true); doInspect(); }
+      else flash("初始化失败", false);
+    } catch { flash("初始化失败", false); }
+    setBusyAction(null);
+  };
 
   const flash = (msg: string, ok = true) => {
     setToast({ msg, ok });
@@ -153,11 +219,11 @@ export default function Home() {
   };
 
   const loadSnapshot = async () => {
-    if (loadingRef.current) return;
+    if (!baseToken || loadingRef.current) return;
     loadingRef.current = true;
     setLoading(true);
     try {
-      const res = await fetch("/api/agent-team/snapshot", { cache: "no-store" });
+      const res = await fetch(`/api/agent-team/snapshot?baseToken=${baseToken}`, { cache: "no-store" });
       const payload = (await res.json()) as ApiResult<Snapshot>;
       if (!payload.ok) {
         setError(payload.error);
@@ -175,15 +241,17 @@ export default function Home() {
   };
 
   useEffect(() => {
+    setMounted(true);
     const t = window.setTimeout(() => {
       setOperationToken(window.sessionStorage.getItem("agent-team-operation-token") || "");
       const seen = window.localStorage.getItem("agent-team-tutorial-seen");
       if (!seen) setTutorialOpen(true);
     }, 0);
-    window.setTimeout(() => void loadSnapshot(), 0);
-    const timer = window.setInterval(() => void loadSnapshot(), 8000);
+    if (baseToken) { window.setTimeout(() => loadSnapshot(), 0); }
+    const timer = window.setInterval(() => { if (baseToken) loadSnapshot(); }, 15000);
     return () => { window.clearTimeout(t); window.clearInterval(timer); };
-  }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [baseToken]);
 
   const dismissTutorial = () => {
     window.localStorage.setItem("agent-team-tutorial-seen", "1");
@@ -206,6 +274,30 @@ export default function Home() {
     };
   }, [snapshot]);
 
+  /* Completion detection */
+  useEffect(() => {
+    if (!snapshot?.objective) return;
+    const obj = snapshot.objective;
+    // Track when an objective starts
+    if (obj.created_at && !objectiveStartedAt) {
+      setObjectiveStartedAt(obj.created_at);
+    }
+    if (!obj.created_at && objectiveStartedAt) {
+      setObjectiveStartedAt(null);
+    }
+    // Detect completion transition
+    const isNowCompleted = obj.status === "completed";
+    if (isNowCompleted && !prevCompleted.current) {
+      setCompletedAt(snapshot.generated_at);
+      setShowCelebration(true);
+    }
+    if (!isNowCompleted) {
+      setShowCelebration(false);
+      setCompletedAt(null);
+    }
+    prevCompleted.current = isNowCompleted;
+  }, [snapshot?.objective?.status, snapshot?.objective?.created_at, snapshot?.generated_at]);
+
   const selectedObjective = snapshot?.objective ?? null;
   const recipients = useMemo(() =>
     ["team-lead", ...(snapshot?.workers.map(w => w.id) ?? [])],
@@ -215,9 +307,10 @@ export default function Home() {
   type ActionResult = ApiResult<unknown>;
   async function post(url: string, body: Record<string, unknown>): Promise<ActionResult> {
     try {
-      const res = await fetch(url, {
+      const res = await fetch(`${url}?baseToken=${baseToken}`, {
         method: "POST",
         headers: { "content-type": "application/json",
+          "x-base-token": baseToken,
           ...(operationToken ? { "x-agent-team-token": operationToken } : {}) },
         body: JSON.stringify(body),
       });
@@ -294,18 +387,41 @@ export default function Home() {
     });
   }
 
-  const connectionState = error ? "error" : snapshot?.empty ? "empty" : loading && !snapshot ? "loading" : "connected";
+  const connectionState = !baseToken ? "disconnected" : error ? "error" : snapshot?.empty ? "empty" : loading && !snapshot ? "loading" : "connected";
+
+  const toggleFullscreen = () => setIsFullscreen((v) => !v);
+
+  if (!mounted) return null;
 
   return (
-    <div className={`${styles.shell} ${!showPanel ? styles.shellNoPanel : ""}`}>
+    <div className={`${styles.shell} ${!showPanel && !isFullscreen ? styles.shellNoPanel : ""} ${isFullscreen ? styles.presentationShell || "" : ""}`}
+      style={isFullscreen ? { gridTemplateColumns: "1fr" } : undefined}>
+      {/* Project bar */}
+      {!isFullscreen && (
+        <ProjectBar
+          baseToken={baseToken}
+          urlInput={urlInput}
+          setUrlInput={setUrlInput}
+          onConnect={connectProject}
+          onDisconnect={disconnectProject}
+          snapshot={snapshot}
+          busyAction={busyAction}
+          onInspect={doInspect}
+          onInit={doInit}
+          onRefresh={() => loadSnapshot()}
+        />
+      )}
+
       {/* Sidebar */}
-      <Sidebar
-        view={view} setView={setView}
-        connectionState={connectionState}
-        metrics={metrics}
-        onRefresh={() => void loadSnapshot()}
-        onShowTutorial={() => setTutorialOpen(true)}
-      />
+      {!isFullscreen && (
+        <Sidebar
+          view={view} setView={setView}
+          connectionState={connectionState}
+          metrics={metrics}
+          onRefresh={() => void loadSnapshot()}
+          onShowTutorial={() => setTutorialOpen(true)}
+        />
+      )}
 
       {/* Main */}
       <main className={`${styles.main} ${!showPanel ? styles.mainWide : ""}`}>
@@ -335,6 +451,8 @@ export default function Home() {
             recipients={recipients}
             operationToken={operationToken} setOperationToken={setOperationToken}
             busyAction={busyAction}
+            isFullscreen={isFullscreen}
+            onToggleFullscreen={toggleFullscreen}
             onSubmitMessage={submitMessage}
             onRecover={recoverExpired}
             onRefresh={() => void loadSnapshot()}
@@ -359,6 +477,70 @@ export default function Home() {
           onComplete={dismissTutorial}
           onJumpToMission={() => { dismissTutorial(); setView("mission"); }}
         />
+      )}
+
+      <CelebrationOverlay
+        objectiveCompleted={showCelebration}
+        objectiveTitle={selectedObjective?.title ?? null}
+        startedAt={objectiveStartedAt}
+        completedAt={completedAt}
+        taskCount={metrics.completed}
+        verificationCount={metrics.verifications}
+        onDismiss={() => setShowCelebration(false)}
+      />
+    </div>
+  );
+}
+
+/* ===== Project Bar ===== */
+function ProjectBar({ baseToken, urlInput, setUrlInput, onConnect, onDisconnect, snapshot, busyAction, onInspect, onInit, onRefresh }: {
+  baseToken: string; urlInput: string; setUrlInput: (v: string) => void;
+  onConnect: (url: string) => void;
+  onDisconnect: () => void;
+  snapshot: Snapshot | null;
+  busyAction: string | null; onInspect: () => void; onInit: () => void; onRefresh: () => void;
+}) {
+  if (!baseToken) {
+    return (
+      <div style={{ gridColumn: "1 / -1", background: "var(--surface-raised)", borderBottom: "1px solid var(--border-default)", padding: "12px 20px", display: "flex", alignItems: "center", gap: 10 }}>
+        <span style={{ fontWeight: 600, fontSize: 14, color: "var(--text-primary)", whiteSpace: "nowrap" }}>连接项目</span>
+        <input
+          value={urlInput}
+          onChange={e => setUrlInput(e.target.value)}
+          onKeyDown={e => { if (e.key === "Enter") onConnect(urlInput); }}
+          placeholder="粘贴飞书 Base 链接 https://xxx.feishu.cn/base/TOKEN"
+          style={{ flex: 1, background: "var(--surface-inset)", border: "1px solid var(--border-default)", borderRadius: 6, padding: "8px 12px", fontSize: 13, color: "var(--text-primary)", outline: "none" }}
+        />
+        <button onClick={() => onConnect(urlInput)} style={{ background: "var(--accent-blue)", color: "#fff", border: "none", borderRadius: 6, padding: "8px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>连接</button>
+      </div>
+    );
+  }
+
+  const tc = snapshot?.table_count;
+  const hasAT = snapshot?.has_agent_team;
+
+  return (
+    <div style={{ gridColumn: "1 / -1", background: "var(--surface-raised)", borderBottom: "1px solid var(--border-default)", padding: "8px 20px", display: "flex", alignItems: "center", gap: 12, fontSize: 12, color: "var(--text-secondary)" }}>
+      <span style={{ fontWeight: 600, color: snapshot ? "var(--accent-green)" : "var(--text-secondary)" }}>●</span>
+      <span style={{ color: "var(--text-primary)", fontFamily: "monospace" }}>...{baseToken.slice(-8)}</span>
+      {tc !== undefined && (
+        <>
+          <span>·</span>
+          <span>{tc} 张表</span>
+          {hasAT ? (
+            <span style={{ color: "var(--accent-green)" }}>Agent-Team 已初始化</span>
+          ) : (
+            <span style={{ color: "var(--accent-warn, #fbbf24)" }}>未初始化</span>
+          )}
+        </>
+      )}
+      <span style={{ flex: 1 }} />
+      <button onClick={onDisconnect} className={styles.btnGhost} style={{ fontSize: 11, color: "var(--text-secondary)" }}>断开</button>
+      <button onClick={onInspect} disabled={busyAction === "inspect"} className={styles.btnGhost} style={{ fontSize: 12 }}>刷新</button>
+      {tc !== undefined && !hasAT && (
+        <button onClick={onInit} disabled={busyAction === "init"} style={{ background: "var(--accent-blue)", color: "#fff", border: "none", borderRadius: 6, padding: "4px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+          {busyAction === "init" ? "初始化中..." : "一键初始化"}
+        </button>
       )}
     </div>
   );
@@ -411,8 +593,12 @@ function Sidebar({ view, setView, connectionState, metrics, onRefresh, onShowTut
 
 function ConnectionStatus({ state }: { state: string }) {
   const cls = state === "connected" ? styles.statusDotLive
+    : state === "disconnected" ? styles.statusDotIdle
     : state === "error" ? styles.statusDotDead : styles.statusDotIdle;
-  const label = state === "connected" ? "已连接 Base" : state === "error" ? "连接异常" : "未连接";
+  const label = state === "connected" ? "已连接 Base"
+    : state === "disconnected" ? "未连接项目"
+    : state === "error" ? "连接异常"
+    : state === "empty" ? "空项目" : "同步中...";
   return (
     <div className={styles.navItem} style={{ cursor: "default" }}>
       <span className={`${styles.statusDot} ${cls}`} />
@@ -426,7 +612,8 @@ type Metrics = { workers: number; working: number; tasks: number; completed: num
 
 function Monitor({ snapshot, metrics, selectedObjective, loading, lastUpdated, connectionState, showPanel,
   message, setMessage, recipient, setRecipient, recipients, operationToken, setOperationToken,
-  busyAction, onSubmitMessage, onRecover, onRefresh, onTogglePanel }: {
+  busyAction, isFullscreen, onToggleFullscreen,
+  onSubmitMessage, onRecover, onRefresh, onTogglePanel }: {
   snapshot: Snapshot | null; metrics: Metrics;
   selectedObjective: Objective | null; loading: boolean;
   lastUpdated: string; connectionState: string; showPanel: boolean;
@@ -435,6 +622,8 @@ function Monitor({ snapshot, metrics, selectedObjective, loading, lastUpdated, c
   recipients: string[];
   operationToken: string; setOperationToken: (v: string) => void;
   busyAction: string | null;
+  isFullscreen: boolean;
+  onToggleFullscreen: () => void;
   onSubmitMessage: (e: FormEvent) => void;
   onRecover: () => void;
   onRefresh: () => void;
@@ -442,6 +631,17 @@ function Monitor({ snapshot, metrics, selectedObjective, loading, lastUpdated, c
 }) {
   return (
     <>
+      {/* Progress header bar */}
+      <ProgressHeader
+        objectiveTitle={selectedObjective?.title ?? null}
+        progress={selectedObjective?.progress ?? 0}
+        completed={metrics.completed}
+        total={metrics.tasks}
+        startedAt={selectedObjective?.created_at ?? null}
+        onToggleFullscreen={onToggleFullscreen}
+        isFullscreen={isFullscreen}
+      />
+
       {/* Top bar */}
       <div className={styles.topBar}>
         <div className={styles.statusRow}>
@@ -478,28 +678,22 @@ function Monitor({ snapshot, metrics, selectedObjective, loading, lastUpdated, c
               <Cpu size={15} className={styles.cardTitleIcon} />
               当前目标
             </div>
-            <span className={styles.progressLabel}>{selectedObjective.status}</span>
+            <span className={styles.progressLabel}>{selectedObjective.status === "completed" ? "已完成" : "进行中"}</span>
           </div>
           <h2 className={styles.objectiveTitle}>{selectedObjective.title}</h2>
           <p className={styles.objectiveDesc}>{selectedObjective.description}</p>
-          <div className={styles.progressRow}>
-            <span className={styles.progressPercent}>{Math.round((selectedObjective.progress ?? 0) * 100)}%</span>
-            <div className={styles.progressTrack}>
-              <div className={styles.progressFill} style={{ width: `${Math.round((selectedObjective.progress ?? 0) * 100)}%` }} />
-            </div>
-          </div>
           <StatusChips counts={metrics.counts} />
         </div>
       ) : (
         <EmptyState icon={<Cpu size={28} />} text="暂无目标记录 — 前往「任务中心」创建新目标" />
       )}
 
-      {/* Tasks */}
+      {/* Task flow diagram */}
       <div className={styles.card}>
         <div className={styles.cardHeader}>
           <div className={styles.cardTitle}>
             <GitBranch size={15} className={styles.cardTitleIcon} />
-            任务流
+            任务依赖图
           </div>
           <button className={styles.btnGhost} onClick={onRecover} disabled={busyAction === "recover" || !selectedObjective}>
             {busyAction === "recover" ? <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} /> : <RotateCcw size={14} />}
@@ -507,11 +701,7 @@ function Monitor({ snapshot, metrics, selectedObjective, loading, lastUpdated, c
           </button>
         </div>
         {snapshot?.tasks.length ? (
-          <div className={styles.taskList}>
-            {snapshot.tasks.map(t => (
-              <TaskCard key={t.id} task={t} edges={snapshot.edges} allTasks={snapshot.tasks} />
-            ))}
-          </div>
+          <TaskFlowDiagram tasks={snapshot.tasks} edges={snapshot.edges} isFullscreen={isFullscreen} />
         ) : <EmptyState icon={<GitBranch size={20} />} text="暂无任务" />}
       </div>
 
@@ -653,7 +843,10 @@ function RightPanel({ snapshot, busyAction, onRecover }: {
       <div className={styles.workerList}>
         {snapshot?.workers.length ? snapshot.workers.map(w => (
           <div key={w.id} className={styles.workerCard}>
-            <div className={`${styles.workerAvatar} ${w.status === "working" ? styles.workerAvatarActive : ""}`}>
+            <div
+              className={`${styles.workerAvatar} ${w.status === "working" ? styles.workerAvatarActive : ""}`}
+              style={w.status === "working" ? { animation: "workerPulse 2s ease-in-out infinite" } : undefined}
+            >
               {w.role.slice(0, 2).toUpperCase()}
             </div>
             <div className={styles.workerBody}>
@@ -669,23 +862,7 @@ function RightPanel({ snapshot, busyAction, onRecover }: {
       <div className={styles.panelHeader} style={{ marginTop: 8 }}>
         <span className={styles.panelLabel}>最近事件</span>
       </div>
-      <div className={styles.eventList}>
-        {snapshot?.events.slice(-12).reverse().map(e => {
-          const eventType = String(e.fields.event_type || "");
-          const actor = String(e.fields.actor || e.fields["执行者"] || "");
-          const detail = String(e.fields.detail || e.fields["详情"] || "");
-          const narrative = formatEventNarrative(eventType, actor, detail);
-          return (
-            <div key={e.id} className={styles.eventItem} title={`${eventType} · ${detail}`}>
-              <span className={`${styles.eventType} ${styles[eventTypeClass(eventType)] || ""}`}>
-                {EVENT_LABELS[eventType] || eventType}
-              </span>
-              <span className={styles.eventDetail}>{narrative}</span>
-              <span className={styles.eventTime}>{String(e.fields["创建时间"] || "").slice(11, 19)}</span>
-            </div>
-          );
-        }) || <EmptyState icon={<Clock3 size={20} />} text="暂无事件" />}
-      </div>
+      <ActivityTimeline events={snapshot?.events || []} isFullscreen={false} />
 
       <div className={styles.panelHeader} style={{ marginTop: 8 }}>
         <span className={styles.panelLabel}>质量闸门</span>
@@ -782,14 +959,14 @@ function MissionControl({ objectiveTitle, setObjectiveTitle, objectiveDescriptio
               <label className={styles.formLabel}>目标标题</label>
               <input className={styles.inputBare} value={objectiveTitle}
                 onChange={e => setObjectiveTitle(e.target.value)}
-                placeholder="例如：撰写一份 Q2 行业分析报告" />
+                placeholder="例如：浙大飞书AI黑客松完整策划方案" />
             </div>
             <div className={styles.formField}>
               <label className={styles.formLabel}>目标描述</label>
               <textarea className={styles.textareaBare} value={objectiveDescription}
                 onChange={e => setObjectiveDescription(e.target.value)}
-                placeholder="详细描述目标任务，包括具体需要覆盖的领域、产出要求、约束条件等..."
-                rows={5} />
+                placeholder={"写得越详细，Leader 拆解越精准。\n\n模板：\n1. 需要覆盖哪些领域？（列出3-5个具体方向）\n2. 每个领域的产出标准是什么？\n3. 有什么约束条件？（预算/时间/受众/格式）\n4. 最终交付物是什么形式？\n\n示例：「为浙大策划一场2天飞书AI黑客松。需要覆盖：1)紫金港3个场地对比 2)3个赛道设计 3)10-20万预算 4)2天执行手册 5)4周宣传方案。所有数据需自洽可交叉核验。产出完整策划书3000字以上。」"}
+                rows={7} />
             </div>
           </div>
 

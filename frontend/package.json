@@ -4,6 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "bridge": "python ../scripts/bridge_server.py",
+    "dev:all": "start \"Bridge Server\" python ../scripts/bridge_server.py && next dev",
     "build": "next build",
     "lint": "eslint ."
   },

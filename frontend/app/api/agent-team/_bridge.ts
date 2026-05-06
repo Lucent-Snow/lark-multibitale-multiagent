@@ -1,59 +1,74 @@
-import { spawn } from "node:child_process";
-import path from "node:path";
+const BRIDGE_URL = process.env.BRIDGE_SERVER_URL || "http://127.0.0.1:9800";
 
-export type BridgeError = {
-  code: string;
-  stage: string;
-  message: string;
-  detail: string;
-  timestamp: string;
-};
+type ApiPayload = { ok: boolean; data?: unknown; error?: { code: string; stage: string; message: string; detail?: string; timestamp?: string } };
 
-const repoRoot = path.resolve(process.cwd(), "..");
-const snapshotCache = new Map<string, { expiresAt: number; payload: unknown; status: number }>();
-const inFlightSnapshots = new Map<string, Promise<{ payload: unknown; status: number }>>();
+const snapshotCache = new Map<string, { expiresAt: number; payload: ApiPayload }>();
+const inFlightFetches = new Map<string, Promise<ApiPayload>>();
 
-export async function runBridge(args: string[], timeoutMs = 180_000) {
-  const result = await runBridgeResult(args, timeoutMs);
-  return Response.json(result.payload, { status: result.status });
+export function getBaseToken(request: Request): string {
+  const url = new URL(request.url);
+  return url.searchParams.get("baseToken")
+    || request.headers.get("x-base-token")
+    || process.env.AGENT_TEAM_BASE_TOKEN
+    || "";
 }
 
-export async function runCachedSnapshot(args: string[]) {
-  const key = args.join("\u001f");
-  const cached = snapshotCache.get(key);
-  if (cached && cached.expiresAt > Date.now()) {
-    return Response.json(cached.payload, { status: cached.status });
+export function withBaseToken(request: Request, args: string[]): string[] {
+  const token = getBaseToken(request);
+  if (!token) throw new Error("Missing baseToken");
+  return [token, ...args];
+}
+
+async function fetchBridge(path: string, queryParams: Record<string, string> = {}, timeoutMs = 300_000) {
+  const url = new URL(path, BRIDGE_URL);
+  for (const [k, v] of Object.entries(queryParams)) {
+    if (v) url.searchParams.set(k, v);
   }
-  const existing = inFlightSnapshots.get(key);
-  if (existing) {
-    const result = await existing;
-    return Response.json(result.payload, { status: result.status });
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await fetch(url.toString(), { signal: controller.signal });
+    return (await res.json()) as ApiPayload;
+  } catch (err) {
+    return {
+      ok: false,
+      error: {
+        code: "BRIDGE_DOWN",
+        stage: "bridge",
+        message: err instanceof Error ? err.message : "Bridge unreachable",
+        detail: `Is bridge_server.py running on ${BRIDGE_URL}?`,
+        timestamp: new Date().toISOString(),
+      },
+    };
+  } finally {
+    clearTimeout(timer);
   }
-  const pending = runBridgeResult(args, 60_000).finally(() => {
-    inFlightSnapshots.delete(key);
-  });
-  inFlightSnapshots.set(key, pending);
-  const result = await pending;
-  if (result.status === 200) {
-    snapshotCache.set(key, {
-      ...result,
-      expiresAt: Date.now() + 20_000
-    });
-  }
-  return Response.json(result.payload, { status: result.status });
+}
+
+export async function runBridge(_args: string[], _timeoutMs?: number): Promise<Response> {
+  // Legacy — not used by the new bridge
+  return Response.json({ ok: false, error: { code: "LEGACY", stage: "bridge", message: "Use bridge server" } }, { status: 500 });
+}
+
+export async function runCachedSnapshot(_args: string[]): Promise<Response> {
+  // Legacy — not used by the new bridge
+  return Response.json({ ok: false, error: { code: "LEGACY", stage: "bridge", message: "Use bridge server" } }, { status: 500 });
+}
+
+export function jsonError(code: string, stage: string, message: string, detail = "", status = 500) {
+  return Response.json({
+    ok: false,
+    error: { code, stage, message, detail, timestamp: new Date().toISOString() },
+  }, { status });
 }
 
 export function requireDashboardWriteAccess(request: Request) {
   const expected = process.env.AGENT_TEAM_DASHBOARD_TOKEN;
   if (!expected && process.env.NODE_ENV !== "production") return null;
   if (!expected) {
-    return jsonError(
-      "DASHBOARD_TOKEN_REQUIRED",
-      "auth",
-      "Set AGENT_TEAM_DASHBOARD_TOKEN before enabling write actions",
-      "",
-      503
-    );
+    return jsonError("DASHBOARD_TOKEN_REQUIRED", "auth", "Set AGENT_TEAM_DASHBOARD_TOKEN before enabling write actions", "", 503);
   }
   if (request.headers.get("x-agent-team-token") !== expected) {
     return jsonError("UNAUTHORIZED", "auth", "Invalid dashboard operation token", "", 401);
@@ -61,74 +76,76 @@ export function requireDashboardWriteAccess(request: Request) {
   return null;
 }
 
-async function runBridgeResult(args: string[], timeoutMs = 120_000) {
-  return new Promise<{ payload: unknown; status: number }>((resolve) => {
-    const child = spawn("python", ["-m", "src.agent_team_v2.dashboard_bridge", ...args], {
-      cwd: repoRoot,
-      env: {
-        ...process.env,
-        PYTHONIOENCODING: "utf-8"
-      },
-      windowsHide: true
-    });
+// ─── Route handlers that use the persistent bridge server ───
 
-    let stdout = "";
-    let stderr = "";
-    const timeout = setTimeout(() => {
-      child.kill();
-      resolve(errorPayload("BRIDGE_TIMEOUT", "bridge_timeout", `Python bridge timed out after ${Math.round(timeoutMs / 1000)}s`, safeDetail(stderr), 504));
-    }, timeoutMs);
+export async function handleSnapshot(request: Request): Promise<Response> {
+  const token = getBaseToken(request);
+  if (!token) return jsonError("NO_TOKEN", "request", "Missing baseToken", "", 400);
 
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-    child.on("error", (error) => {
-      clearTimeout(timeout);
-      resolve(errorPayload("BRIDGE_SPAWN", "bridge_spawn", error.message, safeDetail(stderr), 500));
-    });
-    child.on("close", () => {
-      clearTimeout(timeout);
-      const raw = stdout.trim();
-      if (!raw) {
-        resolve(errorPayload("BRIDGE_EMPTY", "bridge", "Python bridge returned no output", safeDetail(stderr), 502));
-        return;
-      }
-      try {
-        const parsed = JSON.parse(raw);
-        const status = parsed.ok === false ? 502 : 200;
-        resolve({ payload: parsed, status });
-      } catch {
-        resolve(errorPayload("BRIDGE_PARSE", "bridge_parse", "Bridge returned invalid JSON", safeDetail(stderr), 502));
-      }
-    });
+  const url = new URL(request.url);
+  const objectiveId = url.searchParams.get("objectiveId") || "";
+
+  const cacheKey = `snapshot:${token}:${objectiveId}`;
+  const cached = snapshotCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return Response.json(cached.payload);
+  }
+
+  const inflight = inFlightFetches.get(cacheKey);
+  if (inflight) {
+    const result = await inflight;
+    return Response.json(result);
+  }
+
+  const promise = fetchBridge("/snapshot", { baseToken: token, objectiveId }).finally(() => {
+    inFlightFetches.delete(cacheKey);
   });
+  inFlightFetches.set(cacheKey, promise);
+
+  const result = await promise;
+  if (result.ok) {
+    snapshotCache.set(cacheKey, { expiresAt: Date.now() + 30_000, payload: result });
+  }
+  return Response.json(result);
 }
 
-export function jsonError(code: string, stage: string, message: string, detail = "", status = 500) {
-  return Response.json(errorPayload(code, stage, message, detail, status).payload, { status });
-}
-
-function errorPayload(code: string, stage: string, message: string, detail = "", status = 500) {
-  return {
-    payload: {
+async function postBridge(path: string, body: Record<string, unknown>, timeoutMs = 300_000) {
+  const url = new URL(path, BRIDGE_URL);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url.toString(), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    return (await res.json()) as ApiPayload;
+  } catch (err) {
+    return {
       ok: false,
       error: {
-        code,
-        stage,
-        message,
-        detail,
-        timestamp: new Date().toISOString()
-      }
-    },
-    status
-  };
+        code: "BRIDGE_DOWN",
+        stage: "bridge",
+        message: err instanceof Error ? err.message : "Bridge unreachable",
+        detail: `Is bridge_server.py running on ${BRIDGE_URL}?`,
+        timestamp: new Date().toISOString(),
+      },
+    };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
-function safeDetail(value: string) {
-  const cleaned = value.trim();
-  if (!cleaned) return "";
-  return cleaned.split(/\r?\n/).slice(-3).join("\n").slice(0, 600);
+export async function handleCommand(request: Request, path: string): Promise<Response> {
+  const token = getBaseToken(request);
+  if (!token) return jsonError("NO_TOKEN", "request", "Missing baseToken", "", 400);
+
+  let body: Record<string, unknown> = {};
+  try { body = await request.json(); } catch {}
+
+  body.baseToken = token;
+
+  const result = await postBridge(path, body, 300_000);
+  return Response.json(result);
 }
