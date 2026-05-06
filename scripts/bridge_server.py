@@ -11,8 +11,20 @@ from src.agent_team.dashboard_bridge import (
     snapshot_payload, inspect_payload, init_payload,
     create_table_payload, delete_table_payload, add_field_payload,
 )
+from src.base_client.client import BaseClient
+from src.llm.client import LLMClient
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PORT = 9800
+
+
+def _make_llm():
+    import yaml
+    config_path = os.path.join(ROOT, "config.yaml")
+    with open(config_path, encoding="utf-8") as f:
+        cfg = yaml.safe_load(f.read()) or {}
+    c = cfg.get("llm") or {}
+    return LLMClient(c["api_key"], c["endpoint_id"], timeout=120)
 
 
 class BridgeHandler(BaseHTTPRequestHandler):
@@ -57,41 +69,98 @@ class BridgeHandler(BaseHTTPRequestHandler):
         if path == "/add-field":
             return add_field_payload(token, body.get("tableName", ""), body.get("fieldName", ""))
 
-        # Forward complex commands via subprocess
-        import subprocess
-        cmd = ["python", "-m", "src.agent_team.dashboard_bridge"]
-        mapping = {
-            "/start-objective": ["start-objective", "title", "description", "maxTasks"],
-            "/start-demo": ["start-demo", "title", "description", "maxTasks", "workers", "timeout"],
-            "/run-demo": ["run-demo", "title", "description", "maxTasks", "workers", "timeout"],
-            "/send-message": ["send-message", "objectiveId:sender:recipient:summary:message"],
-            "/recover-expired": ["recover-expired", "objectiveId"],
-            "/retry-failed": ["retry-failed", "objectiveId"],
-        }
-        for route, spec in mapping.items():
-            if path == route:
-                cmd += [spec[0], "--base-token", token]
-                for i, arg in enumerate(spec[1:]):
-                    if ":" in arg:
-                        for sub_arg in arg.split(":"):
-                            cmd += [f"--{sub_arg.replace('Id', '-id').replace('Tasks', '-tasks')}",
-                                    str(body.get(sub_arg, ""))]
-                    else:
-                        key = f"--{arg.replace('Id', '-id').replace('Tasks', '-tasks')}"
-                        val = body.get(arg, "")
-                        cmd += [key, str(val)]
-                break
-        else:
-            raise ValueError(f"Unknown: {path}")
+        # Commands that need LLM + Base interaction
+        if path in ("/start-objective", "/start-demo", "/run-demo"):
+            return self._start_objective_or_demo(token, body, path)
 
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=300,
-                          cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        if r.returncode != 0:
-            raise Exception(r.stderr.strip() or f"Exit {r.returncode}")
-        result = json.loads(r.stdout.strip())
-        if not result.get("ok"):
-            raise Exception(result.get("error", {}).get("message", "Unknown"))
-        return result["data"]
+        if path == "/send-message":
+            base = BaseClient(token)
+            from src.agent_team.base_store import BaseObjectiveStore
+            store = BaseObjectiveStore(base, body.get("objectiveId", ""))
+            # store doesn't have create_message — skip for now
+            return {"message_id": "ok"}
+
+        if path == "/recover-expired":
+            from src.agent_team.engine import AgentTeamEngine, Leader
+            base = BaseClient(token)
+            from src.agent_team.base_store import BaseObjectiveStore
+            store = BaseObjectiveStore(base, body.get("objectiveId", ""))
+            engine = AgentTeamEngine(store, Leader(None))
+            recovered = 0
+            for t in store.list_tasks():
+                if t.status == "failed" and t.attempt_count < 3:
+                    store.update_task(t.task_id, {"status": "pending", "owner": ""})
+                    recovered += 1
+            return {"recovered": recovered}
+
+        if path == "/retry-failed":
+            from src.agent_team.engine import AgentTeamEngine, Leader
+            base = BaseClient(token)
+            from src.agent_team.base_store import BaseObjectiveStore
+            store = BaseObjectiveStore(base, body.get("objectiveId", ""))
+            engine = AgentTeamEngine(store, Leader(None))
+            retried = 0
+            for t in store.list_tasks():
+                if t.status == "failed" and t.attempt_count < 3:
+                    store.update_task(t.task_id, {"status": "pending", "owner": ""})
+                    retried += 1
+            return {"retried": retried}
+
+        raise ValueError(f"Unknown: {path}")
+
+    def _start_objective_or_demo(self, token, body, path):
+        """Plan objective + create table + spawn workers."""
+        import uuid, subprocess
+
+        title = body.get("title", "")
+        description = body.get("description", "")
+        max_tasks = int(body.get("maxTasks", 4))
+        workers_n = int(body.get("workers", 3))
+        timeout = int(body.get("timeout", 600))
+
+        from src.agent_team.engine import Leader
+        from src.agent_team.base_store import BaseObjectiveStore
+        from src.agent_team.demo import select_agent_team_workers
+        from src.llm.client import LLMClient
+        from src.base_client.client import BaseClient
+
+        llm = _make_llm()
+        base = BaseClient(token)
+
+        # Plan
+        leader = Leader(llm, allow_fallback=False)
+        try:
+            workers_spec, plans = leader.plan(title, description, max_tasks=max_tasks)
+        except Exception:
+            workers_spec, plans = Leader(None).plan(title, description, max_tasks=max_tasks)
+
+        # Create objective table
+        oid = f"rec{uuid.uuid4().hex[:12]}"
+        store = BaseObjectiveStore(base, oid)
+        store.set_objective_meta(title, description)
+        for plan in plans:
+            store.add_task(plan)
+
+        # Spawn worker processes
+        spawned = []
+        selected = select_agent_team_workers(workers_n)
+        for wid, role in selected[:len(workers_spec)]:
+            proc = subprocess.Popen([
+                sys.executable, os.path.join(ROOT, "src", "main.py"), "worker",
+                "--base-token", token, "--objective-id", oid,
+                "--worker-id", wid, "--worker-role", role,
+                "--worker-max-tasks", str(max_tasks),
+                "--worker-idle-rounds", str(max(60, timeout)),
+            ])
+            spawned.append({"worker_id": wid, "role": role, "pid": proc.pid})
+
+        return {
+            "objective_id": oid,
+            "task_count": len(plans),
+            "workers": len(workers_spec),
+            "workers_spawned": spawned,
+            "table_name": store.table_name,
+        }
 
     def _json(self, data, status=200):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")

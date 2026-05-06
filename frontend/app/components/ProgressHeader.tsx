@@ -7,6 +7,7 @@ type Props = {
   progress: number; // 0–1
   completed: number;
   total: number;
+  isComplete: boolean;
   startedAt: string | null; // ISO timestamp
   onToggleFullscreen: () => void;
   isFullscreen: boolean;
@@ -17,6 +18,7 @@ export default function ProgressHeader({
   progress,
   completed,
   total,
+  isComplete,
   startedAt,
   onToggleFullscreen,
   isFullscreen,
@@ -25,7 +27,7 @@ export default function ProgressHeader({
   const raf = useRef(0);
 
   useEffect(() => {
-    if (!startedAt) return;
+    if (!startedAt || isComplete) return;
     const start = Date.parse(startedAt);
     if (isNaN(start)) return;
 
@@ -38,7 +40,7 @@ export default function ProgressHeader({
     };
     tick();
     return () => cancelAnimationFrame(raf.current);
-  }, [startedAt]);
+  }, [startedAt, isComplete]);
 
   if (!objectiveTitle) return null;
 

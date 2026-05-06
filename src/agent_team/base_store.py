@@ -12,6 +12,11 @@ FIELDS = [
     "artifact", "artifact_title", "verdict", "issues", "created_at",
 ]
 
+# Sentinel stored in the `role` column of the objective metadata row.
+# A single row per table holds the user-facing objective title/description so
+# the dashboard can list multiple objectives without a separate metadata table.
+OBJECTIVE_META_ROLE = "__objective_meta__"
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -60,8 +65,58 @@ class BaseObjectiveStore:
         return None
 
     def create_objective(self, title: str, description: str) -> str:
-        # The table creation IS the objective creation. title/desc are implicit.
+        # The table creation IS the objective creation. title/desc live in a
+        # dedicated metadata row so the dashboard can show real titles instead
+        # of "obj_<id>".
+        self.set_objective_meta(title, description)
         return self.objective_id
+
+    def set_objective_meta(self, title: str, description: str) -> None:
+        """Upsert the single objective metadata row for this table."""
+        existing = self._find_meta_record_id()
+        fields = {
+            "task_id": "",
+            "objective_id": self.objective_id,
+            "subject": title or "",
+            "description": description or "",
+            "role": OBJECTIVE_META_ROLE,
+            "status": "meta",
+            "owner": "",
+            "attempt_count": "0",
+            "depends_on": "",
+            "artifact": "",
+            "artifact_title": "",
+            "verdict": "",
+            "issues": "",
+            "created_at": _now(),
+        }
+        if existing:
+            self.base.update_record(self.table_id, existing, {
+                "subject": fields["subject"],
+                "description": fields["description"],
+            })
+        else:
+            record_id = self.base.create_record(self.table_id, fields)
+            self.base.update_record(self.table_id, record_id, {"task_id": record_id})
+
+    def get_objective_meta(self) -> dict:
+        """Return {title, description, created_at} from the metadata row, or {}."""
+        for record in self.base.list_records(self.table_id):
+            f = record.fields or {}
+            if _scalar(f.get("role")) == OBJECTIVE_META_ROLE:
+                return {
+                    "title": _scalar(f.get("subject")),
+                    "description": _scalar(f.get("description")),
+                    "created_at": _scalar(f.get("created_at")),
+                }
+        return {}
+
+    def _find_meta_record_id(self) -> str | None:
+        for record in self.base.list_records(self.table_id):
+            f = record.fields or {}
+            if _scalar(f.get("role")) == OBJECTIVE_META_ROLE:
+                return record.record_id
+        return None
 
     def add_task(self, plan: TaskPlan) -> Task:
         record_id = self.base.create_record(self.table_id, {
@@ -94,6 +149,8 @@ class BaseObjectiveStore:
         tasks = []
         for record in self.base.list_records(self.table_id):
             f = record.fields or {}
+            if _scalar(f.get("role")) == OBJECTIVE_META_ROLE:
+                continue
             tasks.append(Task(
                 task_id=_scalar(f.get("task_id"), record.record_id),
                 objective_id=_scalar(f.get("objective_id")),

@@ -44,6 +44,12 @@ type Objective = {
   created_at: string; progress: number;
 };
 
+type ObjectiveSummary = {
+  id: string; title: string; description: string;
+  created_at: string; status: string; progress: number;
+  task_count: number; completed_count: number;
+};
+
 type Artifact = {
   artifact_id: string; task_id: string; author: string;
   title: string; content: string; created_at: string;
@@ -58,6 +64,8 @@ type Snapshot = {
   table_count?: number;
   tables?: { name: string; table_id: string }[];
   has_agent_team?: boolean;
+  objectives_list?: { id: string; name: string }[];
+  objectives_summary?: ObjectiveSummary[];
   objective: Objective | null;
   workers: Worker[]; tasks: Task[]; edges: Edge[];
   claims: Record<string, unknown>[];
@@ -141,6 +149,7 @@ export default function Home() {
     (typeof window !== "undefined" && window.sessionStorage.getItem("agent-team-base-token")) || "");
   const [mounted, setMounted] = useState(false);
   const [urlInput, setUrlInput] = useState("");
+  const [selectedObjectiveId, setSelectedObjectiveId] = useState("");
 
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
@@ -223,7 +232,8 @@ export default function Home() {
     loadingRef.current = true;
     setLoading(true);
     try {
-      const res = await fetch(`/api/agent-team/snapshot?baseToken=${baseToken}`, { cache: "no-store" });
+      const oidParam = selectedObjectiveId ? `&objectiveId=${selectedObjectiveId}` : "";
+      const res = await fetch(`/api/agent-team/snapshot?baseToken=${baseToken}${oidParam}`, { cache: "no-store" });
       const payload = (await res.json()) as ApiResult<Snapshot>;
       if (!payload.ok) {
         setError(payload.error);
@@ -405,6 +415,15 @@ export default function Home() {
           onConnect={connectProject}
           onDisconnect={disconnectProject}
           snapshot={snapshot}
+          selectedObjectiveId={selectedObjectiveId}
+          onSelectObjective={(id) => {
+            setSelectedObjectiveId(id);
+            // Clear stale snapshot immediately so workers/tasks from the previous
+            // objective don't briefly bleed onto the new view while we refetch.
+            setSnapshot(null);
+            snapshotRef.current = null;
+            setTimeout(() => loadSnapshot(), 0);
+          }}
           busyAction={busyAction}
           onInspect={doInspect}
           onInit={doInit}
@@ -493,11 +512,13 @@ export default function Home() {
 }
 
 /* ===== Project Bar ===== */
-function ProjectBar({ baseToken, urlInput, setUrlInput, onConnect, onDisconnect, snapshot, busyAction, onInspect, onInit, onRefresh }: {
+function ProjectBar({ baseToken, urlInput, setUrlInput, onConnect, onDisconnect, snapshot, selectedObjectiveId, onSelectObjective, busyAction, onInspect, onInit, onRefresh }: {
   baseToken: string; urlInput: string; setUrlInput: (v: string) => void;
   onConnect: (url: string) => void;
   onDisconnect: () => void;
   snapshot: Snapshot | null;
+  selectedObjectiveId: string;
+  onSelectObjective: (id: string) => void;
   busyAction: string | null; onInspect: () => void; onInit: () => void; onRefresh: () => void;
 }) {
   if (!baseToken) {
@@ -516,8 +537,8 @@ function ProjectBar({ baseToken, urlInput, setUrlInput, onConnect, onDisconnect,
     );
   }
 
+  const summary = snapshot?.objectives_summary || [];
   const tc = snapshot?.table_count;
-  const hasAT = snapshot?.has_agent_team;
 
   return (
     <div style={{ gridColumn: "1 / -1", background: "var(--surface-raised)", borderBottom: "1px solid var(--border-default)", padding: "8px 20px", display: "flex", alignItems: "center", gap: 12, fontSize: 12, color: "var(--text-secondary)" }}>
@@ -527,23 +548,159 @@ function ProjectBar({ baseToken, urlInput, setUrlInput, onConnect, onDisconnect,
         <>
           <span>·</span>
           <span>{tc} 张表</span>
-          {hasAT ? (
-            <span style={{ color: "var(--accent-green)" }}>Agent-Team 已初始化</span>
-          ) : (
-            <span style={{ color: "var(--accent-warn, #fbbf24)" }}>未初始化</span>
-          )}
         </>
       )}
+      <span>·</span>
+      <ProjectSwitcher
+        summary={summary}
+        selectedId={selectedObjectiveId}
+        currentObjective={snapshot?.objective ?? null}
+        onSelect={onSelectObjective}
+      />
       <span style={{ flex: 1 }} />
       <button onClick={onDisconnect} className={styles.btnGhost} style={{ fontSize: 11, color: "var(--text-secondary)" }}>断开</button>
       <button onClick={onInspect} disabled={busyAction === "inspect"} className={styles.btnGhost} style={{ fontSize: 12 }}>刷新</button>
-      {tc !== undefined && !hasAT && (
-        <button onClick={onInit} disabled={busyAction === "init"} style={{ background: "var(--accent-blue)", color: "#fff", border: "none", borderRadius: 6, padding: "4px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
-          {busyAction === "init" ? "初始化中..." : "一键初始化"}
-        </button>
+    </div>
+  );
+}
+
+function ProjectSwitcher({ summary, selectedId, currentObjective, onSelect }: {
+  summary: ObjectiveSummary[];
+  selectedId: string;
+  currentObjective: Objective | null;
+  onSelect: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [open]);
+
+  // Resolve the display title: prefer the actual selected objective's title,
+  // fall back to the summary entry, fall back to a placeholder.
+  const activeId = selectedId || currentObjective?.id || (summary[0]?.id ?? "");
+  const activeSummary = summary.find(s => s.id === activeId);
+  const activeTitle = currentObjective?.title || activeSummary?.title || "未选择项目";
+  const activeProgress = Math.round((currentObjective?.progress ?? activeSummary?.progress ?? 0) * 100);
+  const activeStatus = currentObjective?.status || activeSummary?.status || "";
+
+  if (summary.length === 0) {
+    return (
+      <span style={{ color: "var(--text-secondary)", fontSize: 12 }}>
+        当前项目: 暂无 — 去「任务中心」启动一个
+      </span>
+    );
+  }
+
+  return (
+    <div ref={ref} style={{ position: "relative" }}>
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        style={{
+          display: "inline-flex", alignItems: "center", gap: 8,
+          background: "var(--surface-inset)", border: "1px solid var(--border-default)",
+          borderRadius: 6, padding: "5px 10px", fontSize: 12,
+          color: "var(--text-primary)", cursor: "pointer", maxWidth: 380,
+        }}
+        title={activeTitle}
+      >
+        <span style={{ color: "var(--text-secondary)" }}>当前项目:</span>
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 220, fontWeight: 500 }}>
+          {activeTitle}
+        </span>
+        <ProjectStatusBadge status={activeStatus} progress={activeProgress} />
+        <ChevronDown size={13} style={{ marginLeft: 2, transform: open ? "rotate(180deg)" : "none", transition: "transform 150ms ease" }} />
+      </button>
+      {open && (
+        <div
+          style={{
+            position: "absolute", top: "calc(100% + 4px)", left: 0,
+            background: "var(--surface-raised)", border: "1px solid var(--border-default)",
+            borderRadius: 8, boxShadow: "0 12px 32px rgba(28,43,54,0.18)",
+            minWidth: 360, maxWidth: 460, maxHeight: 360, overflowY: "auto", zIndex: 50,
+            padding: 4,
+          }}
+        >
+          {summary.map(s => {
+            const isActive = s.id === activeId;
+            const pct = Math.round(s.progress * 100);
+            return (
+              <button
+                key={s.id}
+                type="button"
+                onClick={() => { onSelect(s.id); setOpen(false); }}
+                style={{
+                  display: "block", width: "100%", textAlign: "left",
+                  padding: "8px 12px", borderRadius: 6, border: "none",
+                  background: isActive ? "var(--accent-blue-fill-weak)" : "transparent",
+                  cursor: "pointer", marginBottom: 2,
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                  <span style={{
+                    width: 6, height: 6, borderRadius: "50%",
+                    background: isActive ? "var(--accent-blue)" : "var(--border-component)",
+                    flexShrink: 0,
+                  }} />
+                  <span style={{
+                    fontSize: 13, fontWeight: 500, color: "var(--text-primary)",
+                    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1,
+                  }}>
+                    {s.title}
+                  </span>
+                  <ProjectStatusBadge status={s.status} progress={pct} />
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, color: "var(--text-secondary)", paddingLeft: 14 }}>
+                  <span>{formatRelTime(s.created_at)}</span>
+                  <span>·</span>
+                  <span>{s.completed_count}/{s.task_count} 任务</span>
+                  <span style={{ marginLeft: "auto", fontFamily: "monospace", opacity: 0.6 }}>...{s.id.slice(-6)}</span>
+                </div>
+              </button>
+            );
+          })}
+        </div>
       )}
     </div>
   );
+}
+
+function ProjectStatusBadge({ status, progress }: { status: string; progress: number }) {
+  const isComplete = status === "completed" || progress === 100;
+  const isFailing = status === "failing";
+  const bg = isComplete ? "var(--accent-green-fill-weak)" : isFailing ? "rgba(192,103,90,0.10)" : "var(--accent-blue-fill-weak)";
+  const fg = isComplete ? "var(--accent-green)" : isFailing ? "var(--status-fail)" : "var(--accent-blue)";
+  const label = isComplete ? "已完成" : isFailing ? `失败 ${progress}%` : `${progress}%`;
+  return (
+    <span style={{
+      fontSize: 11, fontWeight: 500, padding: "1px 6px", borderRadius: 10,
+      background: bg, color: fg, flexShrink: 0,
+    }}>
+      {label}
+    </span>
+  );
+}
+
+function formatRelTime(iso: string): string {
+  if (!iso) return "—";
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return iso.slice(0, 10);
+  const diff = Date.now() - t;
+  const min = Math.round(diff / 60000);
+  if (min < 1) return "刚刚";
+  if (min < 60) return `${min} 分钟前`;
+  const h = Math.round(min / 60);
+  if (h < 24) return `${h} 小时前`;
+  const d = Math.round(h / 24);
+  if (d < 7) return `${d} 天前`;
+  return new Date(t).toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" });
 }
 
 /* ===== Sidebar ===== */
@@ -637,6 +794,7 @@ function Monitor({ snapshot, metrics, selectedObjective, loading, lastUpdated, c
         progress={selectedObjective?.progress ?? 0}
         completed={metrics.completed}
         total={metrics.tasks}
+        isComplete={selectedObjective?.status === "completed"}
         startedAt={selectedObjective?.created_at ?? null}
         onToggleFullscreen={onToggleFullscreen}
         isFullscreen={isFullscreen}

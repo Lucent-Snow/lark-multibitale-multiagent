@@ -63,24 +63,38 @@ def snapshot_payload(base_token: str, objective_id: str = "") -> dict[str, Any]:
     all_tables = [{"name": item.name, "table_id": item.table_id}
                   for item in (response.data.items or [])]
 
+    # Build the objectives summary up-front so the dashboard can render the
+    # project switcher even before an objective is selected.
+    summary = _objectives_summary(base, obj_tables)
+
     if not objective_id:
-        # Pick latest objective
-        objective_id = _latest_objective_id(obj_tables)
+        # Pick most recently created objective (by meta created_at, fall back to revision)
+        objective_id = summary[0]["id"] if summary else ""
     if not objective_id:
-        return {**_empty_snapshot(base_token), "table_count": len(all_tables), "tables": all_tables}
+        return {**_empty_snapshot(base_token), "table_count": len(all_tables), "tables": all_tables,
+                "objectives_summary": summary}
 
     # Read the single objective table
     table_name = f"obj_{objective_id}"
     target = next((t for t in all_tables if t["name"] == table_name), None)
     if not target:
-        return {**_empty_snapshot(base_token), "table_count": len(all_tables), "tables": all_tables}
+        return {**_empty_snapshot(base_token), "table_count": len(all_tables), "tables": all_tables,
+                "objectives_summary": summary}
 
     store = BaseObjectiveStore(base, objective_id)
     tasks = store.list_tasks()
+    meta = store.get_objective_meta()
 
     workers = list({t.owner for t in tasks if t.owner})
     completed = sum(1 for t in tasks if t.status == "completed")
     progress = round(completed / len(tasks), 4) if tasks else 0
+    has_failed = any(t.status == "failed" for t in tasks)
+    if progress == 1:
+        obj_status = "completed"
+    elif not tasks:
+        obj_status = "pending"
+    else:
+        obj_status = "in_progress"
 
     return {
         "mode": "real",
@@ -89,12 +103,15 @@ def snapshot_payload(base_token: str, objective_id: str = "") -> dict[str, Any]:
         "table_count": len(all_tables),
         "tables": all_tables,
         "has_agent_team": bool(obj_tables),
+        "objectives_list": [{"id": s["id"], "name": f"obj_{s['id']}"} for s in summary],
+        "objectives_summary": summary,
         "objective": {
             "id": objective_id,
-            "title": f"Objective {objective_id[-8:]}",
-            "description": "",
-            "status": "completed" if progress == 1 else "in_progress",
+            "title": meta.get("title") or f"Objective {objective_id[-8:]}",
+            "description": meta.get("description", ""),
+            "status": obj_status,
             "progress": progress,
+            "created_at": meta.get("created_at", ""),
         },
         "workers": [{"id": w, "name": w, "role": "", "status": "working" if any(
             t.owner == w and t.status == "in_progress" for t in tasks) else "idle"} for w in workers],
@@ -119,6 +136,43 @@ def snapshot_payload(base_token: str, objective_id: str = "") -> dict[str, Any]:
     }
 
 
+def _objectives_summary(base, obj_tables) -> list[dict]:
+    """Return [{id, title, description, created_at, status, progress, task_count, completed}]
+    for every obj_<id> table. Sorted by created_at desc (newest first)."""
+    items: list[dict] = []
+    for tb in obj_tables:
+        oid = tb.name.replace("obj_", "")
+        try:
+            store = BaseObjectiveStore(base, oid)
+            tasks = store.list_tasks()
+            meta = store.get_objective_meta()
+        except Exception:
+            tasks, meta = [], {}
+        completed = sum(1 for t in tasks if t.status == "completed")
+        total = len(tasks)
+        progress = round(completed / total, 4) if total else 0
+        if not tasks:
+            status = "pending"
+        elif progress == 1:
+            status = "completed"
+        elif any(t.status == "failed" for t in tasks):
+            status = "failing"
+        else:
+            status = "in_progress"
+        items.append({
+            "id": oid,
+            "title": meta.get("title") or f"Objective {oid[-8:]}",
+            "description": meta.get("description", ""),
+            "created_at": meta.get("created_at", ""),
+            "status": status,
+            "progress": progress,
+            "task_count": total,
+            "completed_count": completed,
+        })
+    items.sort(key=lambda x: x["created_at"] or "", reverse=True)
+    return items
+
+
 def _edges_from_tasks(tasks):
     edges = []
     for t in tasks:
@@ -131,18 +185,14 @@ def _edges_from_tasks(tasks):
     return edges
 
 
-def _latest_objective_id(obj_tables):
-    if not obj_tables:
-        return ""
-    return sorted(obj_tables, key=lambda t: t.name)[-1].name.replace("obj_", "")
-
-
 def _empty_snapshot(base_token):
     return {
         "mode": "real", "empty": True,
         "base": {"token_suffix": base_token[-6:]},
         "table_count": 0, "tables": [],
         "has_agent_team": False,
+        "objectives_list": [],
+        "objectives_summary": [],
         "objective": None, "workers": [], "tasks": [], "edges": [],
         "claims": [], "messages": [], "artifacts": [], "verifications": [],
         "events": [], "generated_at": _now(),
