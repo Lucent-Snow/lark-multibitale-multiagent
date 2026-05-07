@@ -1,203 +1,188 @@
-# Lark Multi-Agent Network — 完整流程图
+# 架构说明
 
-## 一、首次搭建（一次性）
+## 1. 系统目标
 
-```
-                          ┌─────────────────────┐
-                          │   git clone +        │
-                          │   pip install -r     │
-                          │   cp config.yaml.ex  │
-                          │   → config.yaml      │
-                          └──────────┬──────────┘
-                                     │
-                                     ▼
-┌────────────────────────────────────────────────────────────┐
-│              注册 3 个 Bot 应用（Device Code Flow）          │
-│                                                            │
-│  python src/main.py --register manager                     │
-│    │   POST /oauth/v1/app/registration                     │
-│    │   → 浏览器打开 → 用户点"通过"                           │
-│    │   → 拿到 app_id + app_secret                          │
-│    │   → 存入 .credentials.json                            │
-│    ▼                                                       │
-│  python src/main.py --register editor   (同上)              │
-│  python src/main.py --register reviewer (同上)              │
-└──────────────────────┬─────────────────────────────────────┘
-                       │
-                       ▼
-┌────────────────────────────────────────────────────────────┐
-│              给每个 Bot 授权 Base 权限（两次授权）             │
-│                                                            │
-│  Step A: API Scope 授权                                     │
-│    → 飞书返回 scope 缺失时，base_client 自动打开授权页面      │
-│    → 或手动打开:                                             │
-│    https://open.feishu.cn/app/{app_id}/auth?q=bitable:app,  │
-│       base:record:create,base:record:read,base:record:update│
-│                                                            │
-│  Step B: 加入 Base 协作者                                    │
-│    → 在飞书网页打开目标 Base                                 │
-│    → 分享 → 添加 {app_id} 为"可编辑"                         │
-│    → 三个 bot 都要加                                         │
-└──────────────────────┬─────────────────────────────────────┘
-                       │
-                       ▼
-                  ┌─────────┐
-                  │ 搭建完成 │
-                  └────┬────┘
-                       │
-                       ▼
-              编辑 demo.yaml 设定演示主题
+本项目实现一个基于飞书 Base 的多智能体工作流。核心设计不是把 Base 当成最终结果表，而是把 Base 当成 AI 团队的共享控制平面，用来保存任务状态、负责人、产物和验证结果。
+
+当前生产路径是 Agent-Team：
+
+```text
+业务目标 -> Leader 规划 -> Base 目标表 -> Worker 进程 -> LLM 验证 -> 前端看板
 ```
 
-## 二、每次演示（运行时）
+## 2. 运行组件
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    python src/main.py                        │
-│                         │                                    │
-│                         ▼                                    │
-│              ┌──────────────────────┐                        │
-│              │  读取 demo.yaml      │                        │
-│              │  topic.title         │                        │
-│              │  content.title       │                        │
-│              │  content.summary     │                        │
-│              │  content.category    │                        │
-│              │  content.word_count  │                        │
-│              └──────────┬───────────┘                        │
-│                         │                                    │
-│                         ▼                                    │
-│              ┌──────────────────────┐                        │
-│              │  Credentials 加载     │                        │
-│              │  .credentials.json   │                        │
-│              │  manager / editor    │                        │
-│              │  / reviewer 凭据     │                        │
-│              └──────────┬───────────┘                        │
-│                         │                                    │
-│        ┌────────────────┼────────────────┐                   │
-│        ▼                ▼                ▼                   │
-│  ┌──────────┐    ┌──────────┐    ┌──────────┐              │
-│  │ manager  │    │ editor   │    │ reviewer │              │
-│  │ BaseClient│   │ BaseClient│   │ BaseClient│              │
-│  │          │    │          │    │          │              │
-│  │ app_id:  │    │ app_id:  │    │ app_id:  │              │
-│  │ cli_a9.. │    │ cli_a9.. │    │ cli_a9.. │              │
-│  └────┬─────┘    └────┬─────┘    └────┬─────┘              │
-│       │               │               │                     │
-│       ▼               ▼               ▼                     │
-│  ┌──────────┐    ┌──────────┐    ┌──────────┐              │
-│  │ Manager  │    │ Editor   │    │ Reviewer │              │
-│  │ Agent    │    │ Agent    │    │ Agent    │              │
-│  │          │    │          │    │          │              │
-│  │ 运营主管  │    │ 内容编辑  │    │ 质量审核  │              │
-│  └────┬─────┘    └────┬─────┘    └────┬─────┘              │
-│       │               │               │                     │
-│       │          ┌────┴────┐          │                     │
-│       │          │  ARK    │          │                     │
-│       └──────────┤  LLM   ├──────────┘                     │
-│                  │ Client  │                                 │
-│                  └─────────┘                                 │
-│                         │                                    │
-│                         ▼                                    │
-│              ┌──────────────────────┐                        │
-│              │   WorkflowEngine      │                        │
-│              │   run_full_chain()    │                        │
-│              └──────────┬───────────┘                        │
-└─────────────────────────┼───────────────────────────────────┘
-                          │
-                          ▼
-    ┌─────────────────────────────────────────────────────┐
-    │              全链路 8 步自动执行                        │
-    │                                                       │
-    │  ① Manager.create_topic()                             │
-    │     └→ 任务台账: 写入新任务                             │
-    │                                                       │
-    │  ② Manager.assign_to_editor()                         │
-    │     └→ 任务台账: 状态 → "处理中"                        │
-    │                                                       │
-    │  ③ Editor.produce_content()                           │
-    │     └→ ARK LLM 生成文章全文 (temperature=0.7)           │
-    │     └→ 内容库: 写入新内容记录                            │
-    │     └→ 任务台账: 状态 → "待审核"                         │
-    │                                                       │
-    │  ④ Editor.submit_for_review()                          │
-    │     └→ 审核队列: 创建审核任务                            │
-    │                                                       │
-    │  ⑤ Reviewer.review()                                   │
-    │     └→ ARK LLM 审核文章质量 (解析 Approve/Reject)        │
-    │     └→ 审核队列: 更新审核状态                            │
-    │                                                       │
-    │  ⑥ Manager.approve_publish()                           │
-    │     └→ 任务台账: 状态 → "已发布"                         │
-    │                                                       │
-    │  ⑦ Manager.archive_task()                              │
-    │     └→ 任务台账: 状态 → "已归档"                         │
-    │                                                       │
-    │  ⑧ Manager.generate_report()                           │
-    │     └→ ARK LLM 生成运营分析报告                          │
-    │     └→ 操作日志: 全链路审计记录                           │
-    └─────────────────────┬───────────────────────────────┘
-                          │
-                          ▼
-    ┌─────────────────────────────────────────────────────┐
-    │                    飞书多维表格                          │
-    │                                                       │
-    │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌───────┐│
-    │  │ 任务台账  │  │  内容库   │  │ 审核队列  │  │操作日志││
-    │  │          │  │          │  │          │  │       ││
-    │  │ 任务ID   │  │ 内容ID   │  │ 审核ID   │  │ 时间戳 ││
-    │  │ 标题     │  │ 标题     │  │ 关联内容  │  │ 操作者 ││
-    │  │ 状态 ✓   │  │ 全文     │  │ 审核状态  │  │ 操作   ││
-    │  │ 负责人   │  │ 字数     │  │ 审核意见  │  │ 详情   ││
-    │  └──────────┘  └──────────┘  └──────────┘  └───────┘│
-    └─────────────────────────────────────────────────────┘
+| 组件 | 路径 | 职责 |
+|---|---|---|
+| CLI | `src/main.py` | 运行离线内存 demo、真实 Base objective、单 worker 进程。 |
+| Leader | `src/agent_team/engine.py` | 把目标拆解为 worker specs 和 task plans。 |
+| Worker | `src/agent_team/engine.py` | 领取可运行任务、生成产物、验证输出、更新状态。 |
+| 内存存储 | `src/agent_team/memory_store.py` | 测试和离线 demo 使用的线程安全 store。 |
+| Base 存储 | `src/agent_team/base_store.py` | 把一个 objective 映射到一张飞书 Base 表。 |
+| Base client | `src/base_client/client.py` | 封装 `lark-oapi` 表和记录 CRUD。 |
+| LLM client | `src/llm/client.py` | 通过 OpenAI-compatible API 调用火山引擎 ARK。 |
+| Dashboard bridge | `scripts/bridge_server.py`、`src/agent_team/dashboard_bridge.py` | 让 Next.js 前端调用 Python / 飞书逻辑。 |
+| Frontend | `frontend/` | 启动和观察 objective 的指挥中心。 |
+
+## 3. 存储模型
+
+当前存储模型是“一目标一表”：
+
+```text
+飞书 Base app
+    |
+    +-- obj_<objective_id>
+            |
+            +-- metadata row
+            +-- task row 1
+            +-- task row 2
+            +-- task row ...
 ```
 
-## 三、数据流转视角
+每个目标拥有一张独立表，由 `BaseObjectiveStore` 按需创建。
 
-```
-  demo.yaml          config.yaml        .credentials.json
-      │                   │                    │
-      │ topic / summary   │ ARK api_key        │ 3× app_id+secret
-      │                   │ base_token         │
-      ▼                   ▼                    ▼
-  ┌──────────────────────────────────────────────────┐
-  │                   main.py                         │
-  │                                                   │
-  │  3× BaseClient ──── 3× Agent ──── WorkflowEngine │
-  └──────────────────────┬───────────────────────────┘
-                         │
-         ┌───────────────┼───────────────┐
-         ▼               ▼               ▼
-    ┌─────────┐    ┌─────────┐    ┌──────────┐
-    │ LLM 调用 │    │ Base API│    │ 飞书授权  │
-    │         │    │         │    │          │
-    │ Editor  │    │ 创建/   │    │ scope    │
-    │ 生文    │    │ 更新/   │    │ 自动检测 │
-    │ Reviewer│    │ 查询    │    │ 浏览器   │
-    │ 审核    │    │ 记录    │    │ 打开授权 │
-    │ Manager │    │         │    │          │
-    │ 报告    │    │         │    │          │
-    └─────────┘    └─────────┘    └──────────┘
-         │               │               │
-         ▼               ▼               ▼
-    ┌──────────────────────────────────────────┐
-    │  火山引擎 ARK     飞书 Base 4表       飞书开放平台 │
-    │  (OpenAI 兼容)    (多维表格)          (OAuth)   │
-    └──────────────────────────────────────────┘
+### 目标元数据行
+
+元数据行保存目标标题和描述，识别方式是：
+
+```text
+role = "__objective_meta__"
 ```
 
-## 四、错误恢复路径
+### 任务行
 
+每个任务行使用文本字段：
+
+| 字段 | 含义 |
+|---|---|
+| `task_id` | 飞书 record ID，创建后回写到字段中。 |
+| `objective_id` | 目标 / 表标识。 |
+| `subject` | 任务标题。 |
+| `description` | 任务说明和共享目标上下文。 |
+| `role` | 需要的 worker 角色。 |
+| `status` | `pending`、`in_progress`、`completed` 或 `failed`。 |
+| `owner` | 当前拥有或完成该任务的 worker ID。 |
+| `attempt_count` | 重试次数。 |
+| `depends_on` | 逗号分隔的依赖任务标题。 |
+| `artifact` | Worker 产物。 |
+| `artifact_title` | 产物短标题。 |
+| `verdict` | `PASS` 或 `FAIL`。 |
+| `issues` | 验证问题或重试反馈。 |
+| `created_at` | ISO 时间戳。 |
+
+## 4. 目标执行流程
+
+```text
+用户提交 title + description
+    |
+    v
+Leader.plan()
+    |
+    +-- 有 LLM：解析 JSON workers/tasks
+    +-- 无 LLM：使用确定性 fallback plan
+    |
+    v
+BaseObjectiveStore 创建 obj_<objective_id>
+    |
+    v
+写入 task rows
+    |
+    v
+启动 Worker 子进程
+    |
+    v
+每个 Worker 循环：
+    1. 查找符合自己角色的 pending 任务
+    2. 跳过依赖未完成的任务
+    3. 写入 owner 领取任务
+    4. 标记 in_progress
+    5. 生成 artifact
+    6. 验证 artifact
+    7. 完成、重试或失败
 ```
-  API 调用失败
-       │
-       ├── scope 缺失 (code 99991672)
-       │     └→ 提取信息中的授权 URL
-       │     └→ webbrowser.open(url) 自动打开
-       │     └→ 用户点击授权 → 重试
-       │
-       └── Forbidden (code 17910003)
-             └→ 提示 "Bot 不在 Base 协作者中"
-             └→ 显示需要添加的 app_id
-             └→ 用户去飞书添加 → 重试
+
+## 5. Worker 角色
+
+真实 demo 默认可使用：
+
+- `researcher`
+- `editor`
+- `analyst`
+- `reviewer`
+- `manager`
+
+Leader 可以生成自定义 worker specs，但 `select_agent_team_workers()` 会把用户指定的 worker 数量映射到当前可启动的进程角色。`manager` worker 可以兜底处理不匹配的任务。
+
+## 6. 验证和重试
+
+Worker 产物会经过 `verification_fn`。
+
+- `PASS`：任务变为 `completed`，保存产物和结论。
+- `FAIL` 且未超过次数：任务回到 `pending`，清空 `owner`，`attempt_count` 加一。
+- `FAIL` 且超过次数：任务变为 `failed`。
+- verifier 返回非 JSON 时按 `FAIL` 处理。
+- 如果 verifier 自称存在阻塞性缺口，例如“无法完成任务”，即使返回 `PASS` 也会强制转为 `FAIL`。
+
+默认重试上限：
+
+```text
+DEFAULT_MAX_ATTEMPTS = 3
 ```
+
+## 7. 前端链路
+
+```text
+浏览器
+    |
+    | 粘贴飞书 Base URL
+    v
+Next.js 解析 /base/<TOKEN>
+    |
+    v
+Next.js API route
+    |
+    v
+scripts/bridge_server.py at 127.0.0.1:9800
+    |
+    v
+dashboard_bridge.py / BaseObjectiveStore / BaseClient
+    |
+    v
+飞书 Base
+```
+
+前端支持：
+
+- Base 连接和 objective 切换。
+- 使用 `frontend/app/scenarios.ts` 中的预置场景。
+- 自定义目标启动。
+- 任务图和任务状态列表。
+- Worker 卡片。
+- 产物预览。
+- 验证状态。
+- 对未超过重试上限的失败任务执行重试。
+
+## 8. 离线模式和真实模式
+
+| 模式 | 命令 | 外部调用 |
+|---|---|---|
+| 内存 demo | `python src/main.py --agent-team-memory-demo` | 无 |
+| 单元测试 | `python -m unittest discover -s tests` | 无 |
+| 真实 Base run | `python src/main.py run ...` | 飞书 Base + ARK |
+| 前端 demo | `cd frontend && npm run dev:all` | 启动目标时调用飞书 Base + ARK |
+
+## 9. 配置边界
+
+`config.yaml` 包含：
+
+```yaml
+llm:
+  api_key: "ark-xxx"
+  endpoint_id: "ep-xxx"
+
+bot:
+  app_id: "cli_xxx"
+  app_secret: "xxx"
+```
+
+Base token 不写入配置。它通过 CLI 参数传入，或由前端从飞书 Base URL 中解析。

@@ -1,284 +1,226 @@
 # Lark Base Multi-Agent Network
 
-> 基于飞书多维表格的虚拟员工协作系统 —— 一个由 AI Agent 组成的数字组织
+> 基于飞书多维表格的 AI 数字员工协作系统：输入一个业务目标，Leader 自动拆解任务，多角色 Worker 并行执行、验证，并把全过程沉淀到飞书 Base。
 
-## 一、项目概述
+## 项目概述
 
-本项目是**飞书多维表格 Multi-Agent Network 竞赛**参赛作品，构建了一个由多个 AI Agent 扮演不同业务角色的虚拟组织系统。系统中的 Agent 作为"数字员工"，通过飞书多维表格（Base）OpenAPI 协同工作，完成业务构建、数据流转与智能决策。
+本项目是飞书多维表格 Multi-Agent Network 场景的参赛作品。系统把飞书 Base 从“结果表格”升级为“多智能体控制平面”：
 
-### 核心特性
+1. 用户提交一个业务目标。
+2. Leader Agent 通过火山引擎 ARK 拆解 worker 和任务。
+3. 多个 Worker 进程按角色领取任务、生成产物、执行质量验证。
+4. 每个任务的状态、负责人、产物、验证结论都写入飞书 Base。
+5. Next.js 指挥中心实时展示目标进度、任务依赖、worker 状态、产物和质量闸门。
 
-- **多角色 Agent 协作**：3+ 个 AI Agent 扮演不同业务角色，各司其职、协同工作
-- **多维表格驱动**：所有业务数据与状态通过飞书多维表格管理
-- **全链路流程覆盖**：数据产生 → 状态更新 → Agent 处理 → 决策 → 反馈 → 再流转
-- **智能数据分析**：基于运行数据自动生成分析报告与决策建议
+当前主演示路径是 `src/agent_team/` 的 Agent-Team 协作协议。
 
-## 二、系统架构
+## 评委重点看什么
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    虚拟员工组织系统                          │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  ┌──────────┐    ┌──────────┐    ┌──────────┐              │
-│  │  Agent   │    │  Agent   │    │  Agent   │              │
-│  │  运营主管 │    │   编辑   │    │   审核   │              │
-│  │ (Manager)│◄──►│ (Editor) │◄──►│(Reviewer)│              │
-│  └────┬─────┘    └────┬─────┘    └────┬─────┘              │
-│       │               │               │                     │
-│       └───────────────┴───────────────┘                     │
-│                      │                                       │
-│                      ▼                                       │
-│            ┌──────────────────┐                             │
-│            │  飞书多维表格     │                             │
-│            │  (Lark Base)     │                             │
-│            │                  │                             │
-│            │  ┌────────────┐  │                             │
-│            │  │  数据表 1   │  │                             │
-│            │  │  数据表 2   │  │                             │
-│            │  │  数据表 3   │  │                             │
-│            │  └────────────┘  │                             │
-│            └──────────────────┘                             │
-│                      ▲                                       │
-│                      │                                       │
-│            ┌──────────────────┐                             │
-│            │   LLM Model      │                             │
-│            │  (国内大模型)     │                             │
-│            └──────────────────┘                             │
-└─────────────────────────────────────────────────────────────┘
-```
+- **飞书 Base 是控制平面**：每个目标自动创建一张 `obj_<objective_id>` 表，表中保存目标元数据、任务、产物和验证结果。
+- **真实多 Agent 协作**：Leader 负责规划，多个 Worker 子进程按 researcher / editor / analyst / reviewer / manager 等角色并行执行。
+- **质量闸门**：Worker 的产物必须经过 LLM verifier 判断 `PASS` / `FAIL`，失败会自动重试，超过上限才标记失败。
+- **过程可观察**：前端能连接任意飞书 Base URL，查看目标列表、任务图、worker 状态、产物摘要和验证结果。
+- **可离线复现**：内存 demo 和单元测试不依赖飞书或 ARK，可稳定验证核心协议。
+- **可真实落地**：真实演示路径使用 `lark-oapi` 操作飞书 Base，使用 ARK OpenAI-compatible SDK 调用国内大模型。
 
-## 三、核心能力模块
+## 系统架构
 
-### 3.1 虚拟员工建模
-
-本系统定义了 **3 个核心 Agent 角色**：
-
-| 角色 | Agent 名称 | 职责描述 |
-|------|-----------|---------|
-| 运营主管 | **Operation Manager** | 负责整体任务分配、进度跟踪、决策审批、报告生成 |
-| 内容编辑 | **Content Editor** | 负责内容选题、生产加工、信息录入、质量初筛 |
-| 质量审核 | **Quality Reviewer** | 负责内容审核、风险把控、终审放行、反馈优化 |
-
-每个角色包含：
-- 角色职责定义（Role Definition）
-- 输入/输出规范（I/O Specification）
-- 角色协作关系（Collaboration Matrix）
-
-详细定义见各 Agent 源文件中的中文 system prompt
-
-### 3.2 业务系统构建
-
-基于飞书多维表格构建的核心数据模型：
-
-#### 数据表设计
-
-| 表名 | 用途 | 核心字段 |
-|------|------|---------|
-| `任务台账` | 全局任务状态管理 | 任务ID、标题、状态、负责人、创建时间 |
-| `内容库` | 内容素材管理 | 内容ID、标题、摘要、分类、状态 |
-| `审核队列` | 审核任务排队 | 审核ID、关联内容、优先级、审核人 |
-| `操作日志` | 全链路操作记录 | 时间戳、操作者、操作类型、变更内容 |
-
-#### 字段设计
-
-- **状态字段**：`待处理 / 处理中 / 待审核 / 已发布 / 已归档`
-- **关系字段**：表间关联记录，实现数据联动
-- **自动化字段**：创建时间、最后修改时间等
-
-技术实现：所有数据操作通过 **飞书多维表格 OpenAPI** 完成
-
-### 3.3 业务运行与协同
-
-#### 完整业务流程
-
-```
-选题提案 → 内容生产 → 质量审核 → 发布上线 → 数据反馈 → 优化迭代
-   │           │           │          │         │         │
-   ▼           ▼           ▼          ▼         ▼         ▼
-[Manager]   [Editor]   [Reviewer]  [System] [Manager] [Editor]
-              │           │
-              └─────┬─────┘
-                    ▼
-              [Base API]
+```text
+用户目标
+  |
+  v
+Leader Agent（LLM 规划）
+  |
+  | 创建 obj_<objective_id> 表
+  v
+飞书 Base
+  - 目标元数据行
+  - 任务行
+  - 依赖字段
+  - 产物字段
+  - 验证字段
+  |
+  v
+Worker 子进程
+  - 按角色领取任务
+  - 调用 LLM 生成产物
+  - 调用 LLM 执行验证
+  - 写回 Base
+  |
+  v
+Next.js 指挥中心
+  - 目标列表
+  - 任务图
+  - worker 状态
+  - 产物和验证结果
 ```
 
-#### 协作示例
+## 技术栈
 
-1. **Manager** 通过 API 创建新任务，写入任务台账
-2. **Editor** 读取待处理任务，生产内容后更新内容库
-3. **Reviewer** 从审核队列获取任务，审核后更新状态
-4. **Manager** 分析运行数据，生成周报并通过飞书发送
+| 层级 | 技术 | 用途 |
+|---|---|---|
+| 后端 | Python 3.10+ | Agent 协议、CLI、飞书和 LLM 集成 |
+| 飞书 API | `lark-oapi` | Base 表和记录操作 |
+| LLM | 火山引擎 ARK | 规划、生成、验证 |
+| 配置 | YAML | 本地 `config.yaml` |
+| 测试 | Python `unittest` | 离线协议和工作流验证 |
+| 前端 | Next.js 16、React 18、TypeScript | 指挥中心和实时看板 |
+| 图标 | `lucide-react` | 前端控件和状态展示 |
 
-### 3.4 数据分析与报告
+## 目录结构
 
-系统自动分析业务数据，输出以下成果：
-
-| 报告类型 | 触发条件 | 输出渠道 |
-|---------|---------|---------|
-| **日报/周报** | 定时触发 | 飞书消息 |
-| **数据洞察** | 任务完成统计 | 多维表格 |
-| **决策建议** | 流程瓶颈分析 | 报告文档 |
-
-## 四、技术栈
-
-| 组件 | 技术选型 | 说明 |
-|------|---------|------|
-| **大语言模型** | 火山引擎 ARK | 用于 Agent 推理与生成 |
-| **业务中枢** | 飞书多维表格 | 数据存储、状态管理、流程驱动 |
-| **Agent 框架** | 自研 | Agent 编排与工具调用 |
-| **编程语言** | Python | 主开发语言 |
-| **API 调用** | 飞书开放平台 SDK | 多维表格 OpenAPI |
-
-详见项目根目录 CLAUDE.md 与各模块源码
-
-## 五、项目结构
-
-```
+```text
 lark-multibitale-multiagent/
-├── README.md                 # 项目说明文档
-├── AGENTS.md                 # Agent 协作、模块边界与验证命令
-├── CLAUDE.md                 # AI 协作协议
-├── requirements.txt          # Python 依赖
-├── config.yaml.example       # 配置文件模板（含 bot/LLM/workflow 完整结构）
-├── demo.yaml                 # 演示场景数据（编辑此文件切换演示内容）
+├── README.md                  # 面向评委的项目介绍
+├── SETUP.md                   # 部署和演示指南
+├── AGENTS.md                  # AI 编码 agent 工作规则
+├── CLAUDE.md                  # AI 助手上下文
+├── config.yaml.example        # 本地配置模板
+├── requirements.txt           # Python 依赖
 ├── src/
-│   ├── __init__.py
-│   ├── main.py               # 系统入口（Auth + LLM + 多 Bot 初始化）
-│   ├── auth/
-│   │   ├── __init__.py
-│   │   └── app_auth.py      # Bot 凭据管理 + Device Code Flow 注册 + Token 缓存
-│   ├── llm/
-│   │   ├── __init__.py
-│   │   └── client.py        # 火山引擎 ARK LLM 客户端（OpenAI 兼容）
-│   ├── agents/              # Agent 角色定义（各自身份独立）
-│   │   ├── __init__.py
-│   │   ├── manager.py       # 运营主管 Agent — 任务分配、审批、报告
-│   │   ├── editor.py        # 内容编辑 Agent — LLM 生成文章
-│   │   └── reviewer.py      # 质量审核 Agent — LLM 审核决策
-│   ├── agent_team/          # Agent-Team 控制平面（Leader拆解、Worker认领仲裁、验证门）
-│   ├── base_client/         # 飞书多维表格交互
-│   │   ├── __init__.py
-│   │   └── client.py        # SDK 封装 + 权限错误自动检测与修复指引
-│   └── workflow/            # 业务流程引擎
-│       ├── __init__.py
-│       └── engine.py        # 选题→生产→审核→发布→归档→报告 全链路调度
+│   ├── main.py                # CLI 入口：memory demo / run / worker
+│   ├── agent_team/            # Leader、Worker、store、dashboard bridge
+│   ├── base_client/           # 飞书 Base API 封装
+│   └── llm/                   # ARK LLM 客户端
+├── frontend/
+│   ├── app/page.tsx           # 指挥中心主页面
+│   ├── app/api/agent-team/    # Next.js API routes
+│   └── package.json           # 前端脚本和依赖
+├── scripts/
+│   ├── setup_check.py         # 本地配置和 smoke check
+│   └── bridge_server.py       # 前端使用的 Python HTTP bridge
+├── tests/                     # 离线 unittest 测试
+└── docs/
+    ├── architecture.md        # 当前架构和数据流
+    └── agent-team.md          # Agent-Team 协议
 ```
 
-## 六、技术架构详解
+## 快速开始
 
-### 认证流程
-
-```
-Bot Credentials → app_access_token → lark-oapi SDK → Base API
-```
-
-- `src/auth/app_auth.py` 管理 bot 凭据（app_id + app_secret）
-- Device Code Flow 用于注册新 bot 应用，运行时通过 bot 凭据获取 app_access_token
-- Token 自动缓存与刷新
-
-### LLM 集成
-
-- `src/llm/client.py` 封装火山引擎 ARK（OpenAI 兼容）
-- 驱动 Editor（生成文章）、Reviewer（审核质量）、Manager（生成报告）
-
-### Agent 职责
-
-| Agent | LLM 驱动能力 |
-|-------|------------|
-| **Manager** | 生成运营报告、任务分配决策 |
-| **Editor** | 生成真实文章内容 |
-| **Reviewer** | 审核内容质量、风险把控 |
-
-## 七、快速开始
-
-### 前置条件
-
-- Python 3.10+
-- Node.js 18+（前端）
-- 飞书企业账号 + 开放平台应用
-- 国内大模型 API 访问权限
-
-> **新人部署？** 见 [SETUP.md](./SETUP.md) —— 20 分钟完整部署指南 + 常见问题。
-
-### 安装部署
+### 1. 安装依赖
 
 ```bash
-# 克隆仓库
-git clone https://github.com/Lucent-Snow/lark-multibitale-multiagent.git
-cd lark-multibitale-multiagent
-
-# 安装依赖
 pip install -r requirements.txt
-cd frontend && npm install && cd ..
-
-# 配置
-cp config.yaml.example config.yaml
-# 编辑 config.yaml 填入 Base token、表 ID、bot 凭据、ARK API key
-
-# 验证配置
-python scripts/setup_check.py
+cd frontend
+npm install
+cd ..
 ```
 
-### 运行系统
+### 2. 配置凭据
+
+复制模板：
 
 ```bash
-# 首次：注册 3 个 bot 应用（每次会打开浏览器授权）
-python src/main.py --register manager
-python src/main.py --register editor
-python src/main.py --register reviewer
+cp config.yaml.example config.yaml
+```
 
-# 创建 Agent-Team 控制平面表
-python src/main.py --agent-team-setup
-# 把打印的 9 个 table ID 填入 config.yaml
+填写：
 
-# 内存协议演示（不需要 Base/LLM，总能跑）
-python src/main.py --agent-team-memory-demo
+```yaml
+llm:
+  api_key: "ark-xxx"
+  endpoint_id: "ep-xxx"
 
-# 真实 Base 多进程演示
-python src/main.py --agent-team-base-demo --workers 3 --agent-team-max-tasks 4
+bot:
+  app_id: "cli_xxx"
+  app_secret: "xxx"
+```
 
-# 启动前端指挥中心
-cd frontend && npm run dev
-# 浏览器打开 http://localhost:3000
+Base token 不写入 `config.yaml`，通过 CLI 参数传入，或在前端粘贴飞书 Base URL 自动解析。
 
-### 自动化验证
+### 3. 本地验证
 
 ```bash
+python scripts/setup_check.py
 python -m unittest discover -s tests
 python -m compileall -q src tests
 python src/main.py --help
+python src/main.py --agent-team-memory-demo
 ```
 
-## 八、参赛约束声明
+内存 demo 不需要飞书或 ARK，是验证协议最稳定的入口。
 
-本项目严格遵守竞赛规则：
+## 真实 Base 演示
 
-| 约束项 | 声明 |
-|-------|------|
-| **模型限制** | 仅使用国内大模型 API，未进行任何形式的微调 |
-| **技术手段** | 采用 RAG、Prompt Engineering、Tool-use 编排 |
-| **数据真实性** | 所有操作基于真实 API，未使用 Mock |
-| **可复现性** | 评测端可通过行为回放验证系统行为 |
+先在飞书共享空间创建 Base，把 `config.yaml` 中配置的 bot 添加为可编辑成员，然后运行：
 
-详见项目源码与配置
+```bash
+python src/main.py run ^
+  --base-token <BASE_TOKEN> ^
+  --objective "本周科技产业周报" ^
+  --description "整理一份面向科技行业读者的周报，要求包含趋势、重点事件、影响分析和可发布正文。" ^
+  --max-tasks 4 ^
+  --workers 3 ^
+  --timeout 600
+```
 
-## 九、交付物清单
+macOS/Linux 使用 `\` 替代 PowerShell 的 `^`。
 
-| 交付物 | 路径 | 状态 |
-|-------|------|------|
-| 源代码 | `src/` | ✅ |
-| 测试报告 | `tests/` | ✅ 基础离线测试 |
-| 技术文档 | `docs/` | ✅ 架构流程图 |
-| 演示材料 | `demo/` | 🔄 进行中 |
+该命令会：
 
-## 十、License
+- 调用 Leader 拆解 worker 和任务；
+- 在飞书 Base 创建 `obj_<objective_id>` 表；
+- 启动多个 Worker 子进程；
+- 写入任务状态、产物和验证结果；
+- 在终端输出最终任务状态。
 
-本项目基于 MIT License 开源。
+## 前端指挥中心
 
----
+启动 Python bridge 和 Next.js：
 
-> **竞赛信息**
-> - 竞赛名称：飞书多维表格 Multi-Agent Network
-> - 参赛团队：Lucent-Snow
-> - 参赛日期：2026
+```bash
+cd frontend
+npm run dev:all
+```
+
+打开 `http://localhost:3000`，粘贴飞书 Base URL，然后使用：
+
+- **任务中心**：启动预置场景或自定义目标。
+- **任务看板**：观察任务进度、worker 状态、产物和质量验证。
+
+前端通过 `127.0.0.1:9800` 的 Python bridge 调用后端 Agent-Team 模块。
+
+## CLI 参考
+
+```bash
+# 离线协议演示
+python src/main.py --agent-team-memory-demo
+python src/main.py --agent-team-memory-demo --objective "AI 团队演示" --objective-description "验证协议。" --agent-team-max-tasks 4
+
+# 真实 Base-backed objective
+python src/main.py run --base-token <TOKEN> --objective "标题" --description "目标描述" --max-tasks 4 --workers 3 --timeout 600
+
+# 单 worker 进程
+python src/main.py worker --base-token <TOKEN> --objective-id <OBJECTIVE_ID> --worker-id researcher-1 --worker-role researcher
+```
+
+## 验证矩阵
+
+| 命令 | 是否调用外部服务 | 用途 |
+|---|---:|---|
+| `python -m unittest discover -s tests` | 否 | fake / memory store 单元测试 |
+| `python -m compileall -q src tests` | 否 | 语法和导入检查 |
+| `python src/main.py --help` | 否 | CLI 合约检查 |
+| `python src/main.py --agent-team-memory-demo` | 否 | 离线 Agent-Team smoke demo |
+| `cd frontend && npx tsc --noEmit` | 否 | 前端类型检查 |
+| `cd frontend && npm run lint` | 否 | 前端 lint |
+| `python src/main.py run ...` | 是 | 真实飞书 Base + ARK 端到端演示 |
+
+## 文档
+
+- [SETUP.md](./SETUP.md)：部署和演示指南。
+- [docs/architecture.md](./docs/architecture.md)：当前系统架构和数据流。
+- [docs/agent-team.md](./docs/agent-team.md)：Agent-Team 协议。
+- [AGENTS.md](./AGENTS.md)：AI 编码 agent 工作规则。
+- [CLAUDE.md](./CLAUDE.md)：AI 助手上下文。
+
+## 参赛说明
+
+- 使用国内模型 API：火山引擎 ARK。
+- 使用 prompt engineering、tool use、角色拆分和流程编排，不做模型微调。
+- 离线测试不会写入真实飞书 Base。
+- 真实演示命令会调用 ARK 和飞书 Base，并写入记录。
+
+## License
+
+MIT License.
